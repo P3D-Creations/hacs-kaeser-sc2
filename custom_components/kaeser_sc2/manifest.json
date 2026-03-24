@@ -1,0 +1,12 @@
+{
+    "domain": "kaeser_sc2",
+    "name": "Kaeser Sigma Control 2",
+    "codeowners": [],
+    "config_flow": true,
+    "documentation": "https://github.com/yourusername/hacs-kaeser-sc2",
+    "integration_type": "hub",
+    "iot_class": "local_polling",
+    "issue_tracker": "https://github.com/yourusername/hacs-kaeser-sc2/issues",
+    "requirements": ["aiohttp>=3.8"],
+    "version": "1.0.0"
+}

@@ -1,0 +1,49 @@
+{
+    "config": {
+        "step": {
+            "user": {
+                "title": "Add Kaeser Compressor",
+                "description": "Enter the IP address and login credentials for your Kaeser Sigma Control 2 controller.",
+                "data": {
+                    "name": "Device name",
+                    "host": "Host (IP address)",
+                    "username": "Username",
+                    "password": "Password",
+                    "poll_interval": "Poll interval (seconds)"
+                }
+            }
+        },
+        "error": {
+            "cannot_connect": "Cannot connect to the controller. Verify the IP address is correct and reachable.",
+            "invalid_auth": "Invalid username or password.",
+            "unknown": "An unexpected error occurred."
+        },
+        "abort": {
+            "already_configured": "This compressor is already configured."
+        }
+    },
+    "entity": {
+        "sensor": {
+            "pressure": { "name": "Pressure" },
+            "temperature": { "name": "Temperature" },
+            "state": { "name": "State" },
+            "run_hours": { "name": "Run Hours" },
+            "load_hours": { "name": "Load Hours" },
+            "maintenance_in": { "name": "Maintenance In" },
+            "key_switch": { "name": "Key Switch" },
+            "pa_status": { "name": "PA Status" },
+            "controller_time": { "name": "Controller Time" }
+        },
+        "binary_sensor": {
+            "led_error": { "name": "Error" },
+            "led_com_error": { "name": "Communication Error" },
+            "led_maintenance": { "name": "Maintenance Due" },
+            "led_voltage": { "name": "Voltage OK" },
+            "led_load": { "name": "Load" },
+            "led_idle": { "name": "Idle" },
+            "led_remote": { "name": "Remote" },
+            "led_clock": { "name": "Clock" },
+            "led_power_on": { "name": "Power On" }
+        }
+    }
+}
