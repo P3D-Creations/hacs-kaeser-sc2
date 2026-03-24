@@ -233,29 +233,52 @@ class SigmaControl2:
 
     async def test_connection(self) -> bool:
         """Quick connectivity + auth test (used by config flow)."""
-        # First, do a raw TCP check to give a better diagnostic
-        try:
-            parsed = urlparse(self.host)
-            host = parsed.hostname or self.host.replace("http://", "").replace("https://", "").split(":")[0]
-            port = parsed.port or 80
-            _LOGGER.debug("TCP reachability check for %s:%s", host, port)
-            _, writer = await asyncio.wait_for(
-                asyncio.open_connection(host, port), timeout=10
-            )
-            writer.close()
-            await writer.wait_closed()
-            _LOGGER.debug("TCP reachability OK for %s:%s", host, port)
-        except asyncio.TimeoutError:
+        parsed = urlparse(self.host)
+        host = parsed.hostname or self.host.replace("http://", "").replace("https://", "").split(":")[0]
+        port = parsed.port or 80
+
+        # Raw TCP check with retry — SC2 controllers only support one
+        # concurrent connection, so the first attempt may fail if a
+        # browser tab is still open.
+        tcp_ok = False
+        for attempt in range(1, 4):
+            try:
+                _LOGGER.debug(
+                    "TCP reachability check for %s:%s (attempt %d/3)",
+                    host, port, attempt,
+                )
+                _, writer = await asyncio.wait_for(
+                    asyncio.open_connection(host, port), timeout=10
+                )
+                writer.close()
+                await writer.wait_closed()
+                _LOGGER.debug("TCP reachability OK for %s:%s", host, port)
+                tcp_ok = True
+                break
+            except asyncio.TimeoutError:
+                _LOGGER.warning(
+                    "TCP connection to %s:%s timed out (attempt %d/3). "
+                    "The SC2 controller may only accept one connection — "
+                    "close any browser tabs to this controller.",
+                    host, port, attempt,
+                )
+            except OSError as exc:
+                _LOGGER.warning(
+                    "TCP connection to %s:%s failed (attempt %d/3): [%s] %s",
+                    host, port, attempt, type(exc).__name__, exc,
+                )
+            # Wait before retrying to give the controller time to free up
+            if attempt < 3:
+                await asyncio.sleep(3)
+
+        if not tcp_ok:
             _LOGGER.error(
-                "TCP connection to %s port %s timed out (10s). "
-                "Is the controller powered on and the web interface enabled?",
-                host, port,
-            )
-            return False
-        except OSError as exc:
-            _LOGGER.error(
-                "TCP connection to %s port %s failed: [%s] %s",
-                host, port, type(exc).__name__, exc,
+                "All 3 TCP connection attempts to %s:%s failed. "
+                "Possible causes: (1) another device/browser has an active "
+                "session — close ALL browser tabs to http://%s then retry, "
+                "(2) the controller is powered off, or "
+                "(3) a firewall/VLAN is blocking the connection from Home Assistant.",
+                host, port, host,
             )
             return False
 
@@ -277,7 +300,6 @@ class SigmaControl2:
                 "Close any open browser tabs to this controller and retry.",
                 self.host, type(exc).__name__, exc,
             )
-            # Don't return False yet; let authenticate() try
             # Close the failed session so authenticate() starts fresh
             await self.close()
 

@@ -1,5 +1,5 @@
 /**
- * Kaeser Sigma Control 2 — Custom Lovelace Card  v3.1.0
+ * Kaeser Sigma Control 2 — Custom Lovelace Card  v3.2.0
  *
  * Pixel-accurate replica of the SC2 controller front panel.
  *  - Visual config editor for entity assignment & layout tuning
@@ -12,7 +12,7 @@
   /* Guard against double-registration */
   if (customElements.get("kaeser-sc2-card")) return;
 
-  var CARD_VERSION = "3.1.0";
+  var CARD_VERSION = "3.2.0";
   var IMG_BASE = "/kaeser_sc2/images";
 
   /* ═══════════════════════════════════════════════════════════════
@@ -74,6 +74,14 @@
    * ╚═══════════════════════════════════════════════════════════════╝ */
   class KaeserSC2Card extends HTMLElement {
 
+    constructor() {
+      super();
+      this._config = null;
+      this._hass = null;
+      this._rendered = false;
+      this.attachShadow({ mode: "open" });
+    }
+
     static getConfigElement() {
       return document.createElement("kaeser-sc2-card-editor");
     }
@@ -84,11 +92,16 @@
     set hass(hass) {
       this._hass = hass;
       if (!this._config) return;
-      this._ensureRendered();
-      this._refresh();
+      try {
+        this._ensureRendered();
+        this._refresh();
+      } catch (e) {
+        console.error("[kaeser-sc2-card] render error:", e);
+      }
     }
 
     setConfig(config) {
+      if (!config) throw new Error("Invalid configuration");
       this._config = config;
       this._rendered = false;
     }
@@ -118,11 +131,7 @@
     /* ── render ── */
     _ensureRendered() {
       if (this._rendered) return;
-      if (this.shadowRoot) {
-        this.shadowRoot.innerHTML = "";
-      } else {
-        this.attachShadow({ mode: "open" });
-      }
+      this.shadowRoot.innerHTML = "";
       this._buildCard();
       this._rendered = true;
     }
@@ -447,7 +456,7 @@
     type: "kaeser-sc2-card",
     name: "Kaeser Sigma Control 2",
     description: "Pixel-accurate replica of the SC2 controller front panel with live data and LEDs.",
-    preview: true,
+    preview: false,
     documentationURL: "https://github.com/P3D-Creations/hacs-kaeser-sc2"
   });
 

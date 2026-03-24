@@ -14,7 +14,7 @@
             }
         },
         "error": {
-            "cannot_connect": "Cannot connect to the controller. Verify the IP address is correct and reachable.",
+            "cannot_connect": "Cannot connect to the controller. The SC2 only allows one connection at a time — close ALL browser tabs to this controller, then try again. Also verify the IP address is correct and reachable from Home Assistant.",
             "invalid_auth": "Invalid username or password.",
             "unknown": "An unexpected error occurred."
         },
