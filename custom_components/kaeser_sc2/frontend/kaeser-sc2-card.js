@@ -216,6 +216,8 @@ ha-card { overflow:hidden; border-radius:12px; background:#2c2c2c; }
       var d = document.createElement("div"); d.className = "ln";
       d.style.height = lineH;
       d.innerHTML = lines[i];
+      /* Tag the Load line so we can hide it when load_hours is unavailable */
+      if (i === 6) d.id = "ln-load";
       lcd.appendChild(d);
     }
     inner.appendChild(lcd);
@@ -266,7 +268,11 @@ ha-card { overflow:hidden; border-radius:12px; background:#2c2c2c; }
     var lcdKy = $("lcd-key"); if (lcdKy) lcdKy.textContent = _clean(this._state("key_switch"));
     var lcdPa = $("lcd-pa"); if (lcdPa) lcdPa.textContent = _clean(this._state("pa_status"));
     var lcdRn = $("lcd-run"); if (lcdRn) lcdRn.textContent = _hVal(this._state("run_hours"));
-    var lcdLd = $("lcd-load"); if (lcdLd) lcdLd.textContent = _hVal(this._state("load_hours"));
+    var loadRaw = this._state("load_hours");
+    var lcdLd = $("lcd-load"); if (lcdLd) lcdLd.textContent = _hVal(loadRaw);
+    /* Hide the entire Load line when load_hours is unavailable */
+    var lnLoad = $("ln-load");
+    if (lnLoad) lnLoad.style.display = _clean(loadRaw) ? "" : "none";
     var lcdMt = $("lcd-mt"); if (lcdMt) lcdMt.textContent = _hVal(this._state("maintenance_in"));
 
     for (var li = 0; li < LED_NAMES.length; li++) {

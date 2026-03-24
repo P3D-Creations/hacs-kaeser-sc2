@@ -7,9 +7,9 @@ from typing import Any
 
 import voluptuous as vol
 
-from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
+from homeassistant.config_entries import ConfigEntry, ConfigFlow, ConfigFlowResult, OptionsFlow
 from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_USERNAME
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 
 from .api import SigmaControl2
 from .const import DEFAULT_PASSWORD, DEFAULT_POLL_INTERVAL, DEFAULT_USERNAME, DOMAIN
@@ -45,6 +45,12 @@ class KaeserSC2ConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Kaeser SC2."""
 
     VERSION = 1
+
+    @staticmethod
+    @callback
+    def async_get_options_flow(config_entry: ConfigEntry) -> KaeserSC2OptionsFlow:
+        """Return the options flow handler."""
+        return KaeserSC2OptionsFlow(config_entry)
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -96,3 +102,33 @@ class CannotConnect(Exception):
 
 class InvalidAuth(Exception):
     """Error to indicate invalid auth."""
+
+
+class KaeserSC2OptionsFlow(OptionsFlow):
+    """Handle options for Kaeser SC2 (poll interval, etc.)."""
+
+    def __init__(self, config_entry: ConfigEntry) -> None:
+        self._config_entry = config_entry
+
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Manage integration options."""
+        if user_input is not None:
+            return self.async_create_entry(title="", data=user_input)
+
+        current_interval = self._config_entry.options.get(
+            "poll_interval",
+            self._config_entry.data.get("poll_interval", DEFAULT_POLL_INTERVAL),
+        )
+
+        schema = vol.Schema(
+            {
+                vol.Optional(
+                    "poll_interval",
+                    default=current_interval,
+                ): vol.All(int, vol.Range(min=5, max=300)),
+            }
+        )
+
+        return self.async_show_form(step_id="init", data_schema=schema)

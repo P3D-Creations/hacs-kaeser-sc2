@@ -199,15 +199,26 @@ class SigmaControl2:
             )
             return False
 
-        except (aiohttp.ClientError, TimeoutError) as exc:
-            _LOGGER.error("Login error for %s: %s", self.host, exc)
+        except Exception as exc:
+            _LOGGER.error(
+                "Login error for %s: [%s] %s (repr=%r)",
+                self.host, type(exc).__name__, exc, exc,
+            )
             return False
 
     async def test_connection(self) -> bool:
         """Quick connectivity + auth test (used by config flow)."""
         try:
             ok = await self.authenticate()
+            if not ok:
+                _LOGGER.warning("test_connection: authenticate returned False for %s", self.host)
             return ok
+        except Exception as exc:
+            _LOGGER.error(
+                "test_connection failed for %s: [%s] %s",
+                self.host, type(exc).__name__, exc,
+            )
+            return False
         finally:
             await self.close()
 
@@ -255,8 +266,11 @@ class SigmaControl2:
                     self.host, resp.status, ct,
                 )
                 return None
-        except (aiohttp.ClientError, TimeoutError) as exc:
-            _LOGGER.error("Request error for %s: %s", self.host, exc)
+        except Exception as exc:
+            _LOGGER.error(
+                "Request error for %s: [%s] %s",
+                self.host, type(exc).__name__, exc,
+            )
             return None
 
     async def _api_call(

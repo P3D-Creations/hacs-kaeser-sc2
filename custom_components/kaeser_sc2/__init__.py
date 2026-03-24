@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import timedelta
 from pathlib import Path
 
 from homeassistant.components.frontend import add_extra_js_url
@@ -51,7 +52,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: KaeserSC2ConfigEntry) ->
         timeout=15,
     )
 
-    poll_interval = entry.data.get("poll_interval", DEFAULT_POLL_INTERVAL)
+    # Options override data for poll_interval
+    poll_interval = entry.options.get(
+        "poll_interval",
+        entry.data.get("poll_interval", DEFAULT_POLL_INTERVAL),
+    )
 
     coordinator = KaeserSC2Coordinator(
         hass,
@@ -68,7 +73,23 @@ async def async_setup_entry(hass: HomeAssistant, entry: KaeserSC2ConfigEntry) ->
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
+    # Listen for options updates (e.g. poll interval change)
+    entry.async_on_unload(entry.add_update_listener(_async_options_updated))
+
     return True
+
+
+async def _async_options_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Handle options update — adjust coordinator poll interval."""
+    coordinator: KaeserSC2Coordinator = hass.data[DOMAIN].get(entry.entry_id)
+    if coordinator is None:
+        return
+    new_interval = entry.options.get(
+        "poll_interval",
+        entry.data.get("poll_interval", DEFAULT_POLL_INTERVAL),
+    )
+    _LOGGER.info("Updating poll interval for %s to %ds", entry.title, new_interval)
+    coordinator.update_interval = timedelta(seconds=new_interval)
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: KaeserSC2ConfigEntry) -> bool:
