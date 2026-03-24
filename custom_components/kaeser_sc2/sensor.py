@@ -78,6 +78,15 @@ SENSOR_DESCRIPTIONS: tuple[KaeserSensorDescription, ...] = (
         value_fn=lambda d: d.run_hours,
     ),
     KaeserSensorDescription(
+        key="load_hours",
+        translation_key="load_hours",
+        device_class=SensorDeviceClass.DURATION,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        native_unit_of_measurement=UnitOfTime.HOURS,
+        icon="mdi:timer-outline",
+        value_fn=lambda d: d.load_hours,
+    ),
+    KaeserSensorDescription(
         key="maintenance_in",
         translation_key="maintenance_in",
         device_class=SensorDeviceClass.DURATION,

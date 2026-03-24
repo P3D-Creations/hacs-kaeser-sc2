@@ -40,6 +40,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: KaeserSC2ConfigEntry) ->
         host=entry.data[CONF_HOST],
         username=entry.data.get(CONF_USERNAME, DEFAULT_USERNAME),
         password=entry.data.get(CONF_PASSWORD, DEFAULT_PASSWORD),
+        timeout=15,
     )
 
     poll_interval = entry.data.get("poll_interval", DEFAULT_POLL_INTERVAL)

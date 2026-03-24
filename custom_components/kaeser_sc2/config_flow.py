@@ -25,9 +25,13 @@ async def _validate_input(
         host=data[CONF_HOST],
         username=data.get(CONF_USERNAME, DEFAULT_USERNAME),
         password=data.get(CONF_PASSWORD, DEFAULT_PASSWORD),
+        timeout=15,
     )
     try:
         ok = await client.test_connection()
+    except Exception as exc:
+        _LOGGER.error("Connection test failed for %s: %s", data[CONF_HOST], exc)
+        raise CannotConnect from exc
     finally:
         await client.close()
 

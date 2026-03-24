@@ -36,6 +36,7 @@ from .const import (
     SER_ID_HMI_GET_LED_STATUS,
     TYPE_COUNTER,
     TYPE_ENUM,
+    TYPE_FIXED_COMMA,
     TYPE_LINE,
     TYPE_MENU,
     TYPE_PRESSURE,
@@ -241,10 +242,16 @@ class SigmaControl2:
                 f"{self.host}/json.json", json=payload, headers=headers
             ) as resp:
                 ct = resp.headers.get("Content-Type", "")
-                if resp.status == 200 and ct.startswith("application/json"):
+                if resp.status == 200 and ("json" in ct or "javascript" in ct or "text" in ct):
                     return await resp.json(content_type=None)
+                # Fallback: try to parse any 200 response as JSON
+                if resp.status == 200:
+                    try:
+                        return await resp.json(content_type=None)
+                    except Exception:  # noqa: BLE001
+                        pass
                 _LOGGER.warning(
-                    "Unexpected response from %s: %s %s",
+                    "Unexpected response from %s: status=%s content-type=%s",
                     self.host, resp.status, ct,
                 )
                 return None
@@ -270,10 +277,12 @@ class SigmaControl2:
         except (ValueError, TypeError):
             resp_code = -1
 
+        data_field = resp.get("3")
         _LOGGER.debug(
-            "API response app=%s svc=%s code=%s (raw=%r) data_type=%s",
+            "API response app=%s svc=%s code=%s (raw=%r) data_type=%s resp_keys=%s",
             app_id, service_id, resp_code, raw_code,
-            type(resp.get("3")).__name__ if resp.get("3") is not None else "None",
+            type(data_field).__name__ if data_field is not None else "None",
+            list(resp.keys()) if isinstance(resp, dict) else "N/A",
         )
         if resp_code != RESP_SUCCESS:
             if resp_code == RESP_APP_LOGOUT:
@@ -294,14 +303,25 @@ class SigmaControl2:
             )
             return None
 
-        return resp.get("3")
+        if data_field is None:
+            _LOGGER.debug(
+                "API call app=%s svc=%s succeeded but no data field ('3') in response",
+                app_id, service_id,
+            )
+        return data_field
 
     # ------------------------------------------------------------------
     # High-level data retrieval
     # ------------------------------------------------------------------
     async def get_menu_structure(self) -> Any | None:
         data = await self._api_call(APP_ID_HMI, SER_ID_HMI_GET_HMI_MENU)
-        if data:
+        _LOGGER.debug(
+            "get_menu_structure: data_type=%s truthy=%s keys=%s",
+            type(data).__name__ if data is not None else "None",
+            bool(data) if data is not None else False,
+            list(data.keys())[:20] if isinstance(data, dict) else "N/A",
+        )
+        if data is not None:
             self._menu_tree = data
         return data
 
@@ -331,13 +351,13 @@ class SigmaControl2:
         )
 
     # ------------------------------------------------------------------
-    # Menu parsing helpers
+    # Helpers
     # ------------------------------------------------------------------
     def _iter_numeric_dict(self, obj: Any) -> list:
         """Iterate an array-like dict with numeric keys {"0": ..., "1": ...}."""
-        items: list = []
         if isinstance(obj, list):
-            return obj
+            return list(obj)
+        items: list = []
         if isinstance(obj, dict):
             c = 0
             while True:
@@ -350,142 +370,210 @@ class SigmaControl2:
                 c += 1
         return items
 
-    def _find_start_page(self, obj: Any) -> dict | None:
-        """Find the TYPE_START_PAGE object in the flat menu array."""
-        if isinstance(obj, dict):
-            raw_type = obj.get("Type")
-            try:
-                obj_type = int(raw_type) if raw_type is not None else None
-            except (ValueError, TypeError):
-                obj_type = None
-            if obj_type == TYPE_START_PAGE:
-                return obj
-            # Iterate numeric-keyed flat array
-            for item in self._iter_numeric_dict(obj):
-                result = self._find_start_page(item)
-                if result:
-                    return result
-            # Also check named values
-            for v in obj.values():
+    @staticmethod
+    def _safe_int(val: Any) -> int | None:
+        """Convert a value to int, or None."""
+        if val is None:
+            return None
+        try:
+            return int(val)
+        except (ValueError, TypeError):
+            return None
+
+    # ------------------------------------------------------------------
+    # Menu / object-ID discovery
+    # ------------------------------------------------------------------
+    def _find_start_page(self, menu: Any) -> dict | None:
+        """Find the TYPE_START_PAGE (Type=0) object in the menu tree."""
+        if isinstance(menu, dict):
+            t = self._safe_int(menu.get("Type"))
+            if t == TYPE_START_PAGE:
+                return menu
+            # Iterate over all values (numeric or named)
+            for v in menu.values():
                 if isinstance(v, (dict, list)):
                     result = self._find_start_page(v)
                     if result:
                         return result
-        elif isinstance(obj, list):
-            for item in obj:
+        elif isinstance(menu, list):
+            for item in menu:
                 result = self._find_start_page(item)
                 if result:
                     return result
         return None
 
+    def _extract_all_ids(self, data: Any) -> list[int]:
+        """
+        Brute-force: walk the entire menu data and collect every 'Id' value
+        and every integer referenced in 'Object' or 'StatusLine' fields.
+        """
+        ids: set[int] = set()
+
+        def _walk(obj: Any) -> None:
+            if isinstance(obj, dict):
+                for key, val in obj.items():
+                    if key == "Id":
+                        i = self._safe_int(val)
+                        if i is not None and i > 0:
+                            ids.add(i)
+                    elif key in ("StatusLine",):
+                        i = self._safe_int(val)
+                        if i is not None and i > 0:
+                            ids.add(i)
+                    elif key == "Object" and isinstance(val, dict):
+                        for sv in val.values():
+                            i = self._safe_int(sv)
+                            if i is not None and i > 0:
+                                ids.add(i)
+                            elif isinstance(sv, dict):
+                                _walk(sv)
+                    if isinstance(val, (dict, list)):
+                        _walk(val)
+            elif isinstance(obj, list):
+                for item in obj:
+                    _walk(item)
+
+        _walk(data)
+        return sorted(ids)
+
     def _build_id_index(self, menu: Any) -> dict[int, dict]:
-        """Build a lookup of Id → menu object for the flat menu array."""
+        """Build a lookup of Id -> menu dict for the flat menu array."""
         index: dict[int, dict] = {}
-        items = self._iter_numeric_dict(menu) if isinstance(menu, (dict, list)) else []
-        for item in items:
-            if isinstance(item, dict) and item.get("Id") is not None:
-                try:
-                    idx = int(item["Id"])
-                except (ValueError, TypeError):
-                    continue
-                index[idx] = item
+
+        def _walk(obj: Any) -> None:
+            if isinstance(obj, dict):
+                oid = self._safe_int(obj.get("Id"))
+                if oid is not None:
+                    index[oid] = obj
+                for v in obj.values():
+                    if isinstance(v, (dict, list)):
+                        _walk(v)
+            elif isinstance(obj, list):
+                for item in obj:
+                    _walk(item)
+
+        _walk(menu)
         return index
 
-    def _extract_object_ids(self, start_page: dict, id_index: dict[int, dict]) -> list[int]:
-        """
-        Extract all leaf HMI object IDs from the start page and its children.
-
-        The start page has:
-        - StatusLine: int ID or dict (references a TYPE_LINE)
-        - Object: {"0": id_or_dict, "1": id_or_dict, ...} (lines on the page)
-
-        Each TYPE_LINE has:
-        - Object: {"0": id_or_dict, ...} (actual IO objects like pressure, temp)
-        """
+    def _extract_object_ids_from_page(
+        self, page: dict, id_index: dict[int, dict]
+    ) -> list[int]:
+        """Extract leaf HMI object IDs from a start page via its children."""
         ids: list[int] = []
         collected: set[int] = set()
 
-        def _collect_from(ref: Any) -> None:
-            """Recursively collect object IDs from a reference."""
+        def _collect(ref: Any) -> None:
             if ref is None:
                 return
-            # Convert string IDs to int
-            if isinstance(ref, str):
-                try:
-                    ref = int(ref)
-                except ValueError:
-                    return
-            if isinstance(ref, int):
-                # This is an ID referencing another object in the menu
-                if ref in id_index:
-                    obj = id_index[ref]
-                    _collect_from_obj(obj)
-                else:
-                    # It's a leaf object ID — add it
-                    if ref not in collected:
-                        collected.add(ref)
-                        ids.append(ref)
+            i = self._safe_int(ref)
+            if i is not None:
+                if i in id_index:
+                    _collect_obj(id_index[i])
+                elif i not in collected:
+                    collected.add(i)
+                    ids.append(i)
             elif isinstance(ref, dict):
-                _collect_from_obj(ref)
+                _collect_obj(ref)
 
-        def _collect_from_obj(obj: dict) -> None:
-            raw_type = obj.get("Type")
-            try:
-                obj_type = int(raw_type) if raw_type is not None else None
-            except (ValueError, TypeError):
-                obj_type = None
-            obj_id = obj.get("Id")
-            if isinstance(obj_id, str):
-                try:
-                    obj_id = int(obj_id)
-                except ValueError:
-                    pass
-
-            # If it's a container (start_page, line, menu), recurse into children
-            if obj_type in (TYPE_START_PAGE, TYPE_LINE, TYPE_START_MENU, TYPE_MENU):
-                # Collect StatusLine
+        def _collect_obj(obj: dict) -> None:
+            t = self._safe_int(obj.get("Type"))
+            oid = self._safe_int(obj.get("Id"))
+            container_types = (
+                TYPE_START_PAGE, TYPE_LINE, TYPE_START_MENU, TYPE_MENU,
+            )
+            if t in container_types:
                 sl = obj.get("StatusLine")
                 if sl is not None:
-                    _collect_from(sl)
-                # Collect Object children
-                sub_objects = obj.get("Object")
-                if sub_objects is not None:
-                    for child in self._iter_numeric_dict(sub_objects):
-                        _collect_from(child)
-                    # Also try named keys
-                    if isinstance(sub_objects, dict):
-                        for v in sub_objects.values():
-                            if isinstance(v, (int, dict)):
-                                _collect_from(v)
+                    _collect(sl)
+                sub = obj.get("Object")
+                if isinstance(sub, dict):
+                    for v in sub.values():
+                        _collect(v)
+                elif isinstance(sub, list):
+                    for v in sub:
+                        _collect(v)
             else:
-                # It's a leaf object (pressure, temp, etc.) — add its ID
-                if obj_id is not None and obj_id not in collected:
-                    collected.add(obj_id)
-                    ids.append(obj_id)
+                if oid is not None and oid not in collected:
+                    collected.add(oid)
+                    ids.append(oid)
 
-        _collect_from_obj(start_page)
+        _collect_obj(page)
         return ids
+
+    async def _discover_object_ids(self) -> list[int]:
+        """Discover HMI object IDs from the menu structure."""
+        menu = await self.get_menu_structure()
+        if menu is None:
+            _LOGGER.warning("Menu response is None from %s", self.host)
+            return []
+        if not menu:
+            _LOGGER.warning("Menu response is empty (%s) from %s", type(menu).__name__, self.host)
+            return []
+
+        # Dump raw menu structure for debugging (truncated)
+        try:
+            menu_repr = repr(menu)
+            if len(menu_repr) > 3000:
+                menu_repr = menu_repr[:3000] + "...(truncated)"
+            _LOGGER.debug("Raw menu data from %s: %s", self.host, menu_repr)
+        except Exception:  # noqa: BLE001
+            _LOGGER.debug("Could not repr menu data from %s", self.host)
+
+        _LOGGER.debug(
+            "Menu data type=%s keys=%s",
+            type(menu).__name__,
+            list(menu.keys())[:20] if isinstance(menu, dict) else "N/A",
+        )
+
+        # Strategy 1: find the start page and resolve its children
+        sp = self._find_start_page(menu)
+        if sp:
+            _LOGGER.debug("Found start page: Type=%s Id=%s", sp.get("Type"), sp.get("Id"))
+            id_index = self._build_id_index(menu)
+            _LOGGER.debug("ID index has %d entries", len(id_index))
+            ids = self._extract_object_ids_from_page(sp, id_index)
+            if ids:
+                _LOGGER.debug("Strategy 1 (start page): found %d IDs: %s", len(ids), ids)
+                return ids
+            _LOGGER.debug("Strategy 1: start page found but no IDs extracted")
+        else:
+            _LOGGER.debug("Strategy 1: no TYPE_START_PAGE (Type=0) found in menu")
+            # Log all Type values found for debugging
+            types_found: set[int] = set()
+            def _find_types(obj: Any) -> None:
+                if isinstance(obj, dict):
+                    t = self._safe_int(obj.get("Type"))
+                    if t is not None:
+                        types_found.add(t)
+                    for v in obj.values():
+                        if isinstance(v, (dict, list)):
+                            _find_types(v)
+                elif isinstance(obj, list):
+                    for item in obj:
+                        _find_types(item)
+            _find_types(menu)
+            _LOGGER.debug("Types found in menu: %s", sorted(types_found))
+
+        # Strategy 2: brute-force collect all IDs from the menu
+        _LOGGER.debug("Trying brute-force ID extraction")
+        all_ids = self._extract_all_ids(menu)
+        if all_ids:
+            _LOGGER.debug("Strategy 2 (brute-force): found %d candidate IDs: %s", len(all_ids), all_ids)
+            return all_ids
+
+        _LOGGER.warning(
+            "Could not discover any HMI object IDs from %s. "
+            "Menu type=%s, menu keys=%s. Please enable debug logging "
+            "and share the output.",
+            self.host,
+            type(menu).__name__,
+            list(menu.keys())[:20] if isinstance(menu, dict) else "N/A",
+        )
+        return []
 
     # ------------------------------------------------------------------
     # Value parsing
     # ------------------------------------------------------------------
-    @staticmethod
-    def _value_text(obj: dict) -> str:
-        """Get the display value text from an HMI object."""
-        for key in ("Value", "ValueText", "Text"):
-            v = obj.get(key)
-            if v is not None:
-                return str(v).strip()
-        return ""
-
-    @staticmethod
-    def _unit_text(obj: dict) -> str:
-        """Get the unit string from an HMI object (separate field)."""
-        u = obj.get("Unit")
-        if u is not None:
-            return str(u).strip()
-        return ""
-
     @staticmethod
     def _parse_numeric(text: str) -> float | None:
         m = re.search(r"(-?\d+\.?\d*)", text)
@@ -519,57 +607,35 @@ class SigmaControl2:
             if not await self.authenticate():
                 _LOGGER.warning("Cannot auth to %s — trying unauthenticated", self.host)
 
-        # Menu discovery (once)
-        if self._menu_tree is None:
-            menu = await self.get_menu_structure()
-            _LOGGER.debug("Menu structure from %s: %s", self.host, menu)
-
-        # Object IDs
-        if not self._object_ids and self._menu_tree:
-            sp = self._find_start_page(self._menu_tree)
-            if sp:
-                _LOGGER.debug("Start page from %s: %s", self.host, sp)
-                id_index = self._build_id_index(self._menu_tree)
-                _LOGGER.debug("Menu ID index has %d entries", len(id_index))
-                self._object_ids = self._extract_object_ids(sp, id_index)
-                _LOGGER.debug(
-                    "Discovered %d HMI object IDs from %s: %s",
-                    len(self._object_ids),
-                    self.host,
-                    self._object_ids,
-                )
-            else:
-                _LOGGER.warning("No start page found in menu from %s", self.host)
+        # Discover object IDs (once)
+        if not self._object_ids:
+            self._object_ids = await self._discover_object_ids()
 
         # HMI objects
         if self._object_ids:
             hmi = await self.get_hmi_objects(self._object_ids)
-            _LOGGER.debug("HMI objects from %s: %s", self.host, hmi)
             if hmi:
                 self._parse_hmi(data, hmi)
+            else:
+                _LOGGER.warning("HMI objects request returned empty from %s", self.host)
         else:
             _LOGGER.warning("No HMI object IDs to fetch from %s", self.host)
 
         # LEDs
         led = await self.get_led_status()
-        _LOGGER.debug("LED status from %s: %s", self.host, led)
         if led:
             self._parse_leds(data, led)
 
         # Compressor name/info
         info = await self.get_compressor_info()
-        _LOGGER.debug("Compressor info from %s: %s", self.host, info)
         if info:
             comp_type = info.get("CompType") or ""
             comp_seq = info.get("CompSeqNum") or ""
             pn = info.get("PN") or ""
-            name = info.get("Name") or ""
             if comp_type:
                 data.name = f"SC2 {comp_seq}-{comp_type}" if comp_seq else comp_type
             elif pn:
                 data.name = pn
-            elif name:
-                data.name = str(name)
 
         # I/O
         io = await self.get_io_data()
@@ -587,58 +653,69 @@ class SigmaControl2:
         data.online = True
         _LOGGER.debug(
             "Poll result from %s: pressure=%s %s, temp=%s %s, state=%s, "
-            "run_hours=%s, maintenance_in=%s, key=%s, pa=%s, time=%s",
+            "run_hours=%s, load_hours=%s, maint_in=%s, key=%s, pa=%s, time=%s",
             self.host,
             data.pressure, data.pressure_unit,
             data.temperature, data.temperature_unit,
             data.state,
-            data.run_hours, data.maintenance_in,
+            data.run_hours, data.load_hours, data.maintenance_in,
             data.key_switch, data.pa_status,
             data.controller_time,
         )
         return data
 
     # ------------------------------------------------------------------
-    # Parsers
+    # HMI object parser  (based on captured controller JSON responses)
+    #
+    # Objects come back as a numeric-keyed dict {"0": {...}, "1": {...}, ...}
+    # in DISPLAY ORDER.  The start page layout is:
+    #
+    #   [pressure Type=8] [time Type=12] [temperature Type=9]
+    #   -----  (Type=15 separator)
+    #   [state Type=14  e.g. "On load"]
+    #   -----  (separator)
+    #   [key_src Type=14] - [key_val Type=14] ¦ [pA Type=14] - [pa_val Type=14]
+    #   -----  (separator)
+    #   Run    [hours Type=6]
+    #   Load   [hours Type=6]
+    #   Maintenance in   [hours Type=6]
     # ------------------------------------------------------------------
     def _parse_hmi(self, data: CompressorData, objects: Any) -> None:
-        """Parse HMI object response into CompressorData fields."""
-        obj_list: list[dict] = self._iter_numeric_dict(objects)
+        """Parse HMI objects into CompressorData fields."""
+        obj_list = self._iter_numeric_dict(objects)
         if not obj_list and isinstance(objects, dict):
-            # Maybe it's a single object or has non-numeric keys
-            obj_list = [
-                v for v in objects.values() if isinstance(v, dict)
-            ]
+            obj_list = [v for v in objects.values() if isinstance(v, dict)]
 
         _LOGGER.debug("Parsing %d HMI objects", len(obj_list))
+
+        # Collect objects by type for structured parsing
+        enums: list[str] = []       # TYPE_ENUM values in display order
+        labels: list[str] = []      # TYPE_TEXT_DISPLAY values in order
+        counters: list[tuple[str, str]] = []  # (preceding_label, value) for hour counters
+        last_label = ""
 
         for obj in obj_list:
             if not isinstance(obj, dict):
                 continue
-            raw_type = obj.get("Type")
-            try:
-                ot = int(raw_type) if raw_type is not None else None
-            except (ValueError, TypeError):
-                ot = None
-            vt = self._value_text(obj)
-            unit = self._unit_text(obj)
+            ot = self._safe_int(obj.get("Type"))
+            vt = (obj.get("Value") or obj.get("ValueText") or obj.get("Text") or "")
+            if isinstance(vt, str):
+                vt = vt.strip()
+            else:
+                vt = str(vt).strip()
+            unit = (obj.get("Unit") or "").strip() if isinstance(obj.get("Unit"), str) else ""
 
             _LOGGER.debug(
-                "HMI obj Id=%s Type=%s Value='%s' Unit='%s'",
+                "HMI Id=%s Type=%s Value=%r Unit=%r",
                 obj.get("Id"), ot, vt, unit,
             )
 
+            # --- Status bar items (one of each) ---
             if ot == TYPE_PRESSURE:
                 v = self._parse_numeric(vt)
                 if v is not None:
                     data.pressure = v
-                    if unit:
-                        data.pressure_unit = unit
-                    else:
-                        # Fallback: try to extract unit from value text
-                        um = re.search(r"(psi|bar|kPa|MPa)", vt, re.I)
-                        if um:
-                            data.pressure_unit = um.group(1)
+                    data.pressure_unit = unit or "psi"
 
             elif ot == TYPE_TEMPERATURE:
                 v = self._parse_numeric(vt)
@@ -651,94 +728,129 @@ class SigmaControl2:
                     else:
                         data.temperature_unit = "°F"
 
-            elif ot == TYPE_TIME:
-                data.controller_time = vt
-
-            elif ot == TYPE_COUNTER:
-                v = self._parse_numeric(vt)
-                if v is not None:
-                    low_unit = unit.lower() if unit else ""
-                    low_vt = vt.lower()
-                    if data.run_hours is None:
-                        data.run_hours = int(v)
-                    elif data.maintenance_in is None:
-                        data.maintenance_in = int(v)
-
-            elif ot in (TYPE_ENUM, TYPE_TEXT_DISPLAY):
-                low = vt.lower()
-                if low in (
-                    "off", "load", "idle", "ready", "standby",
-                    "error", "motor start", "motor stop",
-                    "star", "delta", "star-delta",
-                ):
-                    data.state = low
-
-            elif ot == TYPE_TEXT_FRAME:
-                self._parse_text_frame(data, vt)
-
-            elif ot == TYPE_TIMER:
-                # TYPE_TIMER (10) — could be controller time
-                if not data.controller_time:
+            elif ot in (TYPE_TIME, TYPE_TIMER):
+                if vt:
                     data.controller_time = vt
 
-    def _parse_text_frame(self, data: CompressorData, text: str) -> None:
-        low = text.lower().strip()
-        if "key" in low:
-            m = re.search(r"key\s*[-–]\s*(\w+)", low)
-            if m:
-                data.key_switch = m.group(1)
-        if "pa " in low or "pa-" in low:
-            m = re.search(r"pa\s*[-–]\s*(\w+)", low)
-            if m:
-                data.pa_status = m.group(1)
-        if "run" in low:
-            m = re.search(r"run\s+(\d+)\s*h", low)
-            if m:
-                data.run_hours = int(m.group(1))
-        if "maintenance" in low:
-            m = re.search(r"maintenance\s+in\s+(\d+)\s*h", low)
-            if m:
-                data.maintenance_in = int(m.group(1))
-        for st in ("off", "load", "idle", "ready", "standby", "error", "motor start"):
-            if low == st:
-                data.state = st
+            # --- Hour counters (TYPE_FIXED_COMMA = 6 or TYPE_COUNTER = 7) ---
+            elif ot in (TYPE_FIXED_COMMA, TYPE_COUNTER):
+                counters.append((last_label, vt))
+                last_label = ""
+
+            # --- Enum values (state, key switch, PA status) ---
+            elif ot == TYPE_ENUM:
+                enums.append(vt)
+
+            # --- Text labels and separators ---
+            elif ot in (TYPE_TEXT_DISPLAY, TYPE_TEXT_FRAME):
+                cleaned = vt.strip().strip("-").strip("¦").strip()
+                if cleaned:
+                    last_label = cleaned
+                    labels.append(cleaned)
+
+        # ----- Interpret collected enums -----
+        # Known compressor state values
+        state_values = {
+            "on load", "off", "load", "idle", "ready", "standby",
+            "error", "motor start", "motor stop", "star", "delta",
+            "star-delta", "unload", "start up", "emergency stop",
+            "pressure holding",
+        }
+        state_idx = -1
+        for i, ev in enumerate(enums):
+            if ev.lower() in state_values:
+                data.state = ev.lower()
+                state_idx = i
                 break
 
+        # After state: remaining enums follow pattern [key_src, key_val, "pA", pa_val]
+        remaining = enums[state_idx + 1:] if state_idx >= 0 else enums[1:]
+
+        # Find "pA" marker to split key switch from PA status
+        pa_marker_idx = None
+        for i, ev in enumerate(remaining):
+            if ev.lower() == "pa":
+                pa_marker_idx = i
+                break
+
+        if pa_marker_idx is not None:
+            key_enums = remaining[:pa_marker_idx]
+            pa_enums = remaining[pa_marker_idx + 1:]
+            if key_enums:
+                # Last value before pA is the key switch value (e.g., "on" / "off")
+                data.key_switch = key_enums[-1]
+            if pa_enums:
+                data.pa_status = pa_enums[0]
+        elif len(remaining) >= 4:
+            # Fallback: assume [key_src, key_val, pa_label, pa_val]
+            data.key_switch = remaining[1]
+            data.pa_status = remaining[3]
+        elif len(remaining) >= 2:
+            data.key_switch = remaining[1] if len(remaining) > 1 else remaining[0]
+
+        # ----- Interpret hour counters -----
+        # Try label-based matching first
+        used = [False] * len(counters)
+        for i, (label, val) in enumerate(counters):
+            v = self._parse_numeric(val)
+            if v is None:
+                continue
+            ll = label.lower()
+            if "maintenance" in ll:
+                data.maintenance_in = int(v)
+                used[i] = True
+            elif "load" in ll:
+                data.load_hours = int(v)
+                used[i] = True
+            elif "run" in ll:
+                data.run_hours = int(v)
+                used[i] = True
+
+        # For any unmatched counters, assign by position: run, load, maintenance
+        unmatched = [
+            self._parse_numeric(val)
+            for i, (_, val) in enumerate(counters)
+            if not used[i] and self._parse_numeric(val) is not None
+        ]
+        for v in unmatched:
+            if v is None:
+                continue
+            if data.run_hours is None:
+                data.run_hours = int(v)
+            elif data.load_hours is None:
+                data.load_hours = int(v)
+            elif data.maintenance_in is None:
+                data.maintenance_in = int(v)
+
+    # ------------------------------------------------------------------
+    # LED parser
+    # ------------------------------------------------------------------
     def _parse_leds(self, data: CompressorData, led_data: dict) -> None:
-        _LOGGER.debug("LED raw keys: %s", list(led_data.keys()) if isinstance(led_data, dict) else type(led_data))
-        mapping = {
-            "led_error": "led_error",
-            "led_com_error": "led_com_error",
-            "led_maintenance": "led_maintenance",
-            "led_voltage": "led_voltage",
-            "led_load": "led_load",
-            "led_idle": "led_idle",
-            "led_remote": "led_remote",
-            "led_clock": "led_clock",
-            "led_power_on": "led_power_on",
-        }
-        for api_key, attr in mapping.items():
-            info = led_data.get(api_key)
-            if info and isinstance(info, dict):
-                setattr(data, attr, self._led_str(info.get("State", LED_STATE_OFF)))
+        if not isinstance(led_data, dict):
+            return
+        _LOGGER.debug("LED keys: %s", list(led_data.keys()))
+        led_names = [
+            "led_error", "led_com_error", "led_maintenance", "led_voltage",
+            "led_load", "led_idle", "led_remote", "led_clock", "led_power_on",
+        ]
+        for name in led_names:
+            info = led_data.get(name)
+            if isinstance(info, dict):
+                setattr(data, name, self._led_str(info.get("State", LED_STATE_OFF)))
+        # led_voltage is special: if present at all, it means voltage is OK
         if led_data.get("led_voltage") is not None:
             data.led_voltage = "on"
 
+    # ------------------------------------------------------------------
+    # Report parser
+    # ------------------------------------------------------------------
     def _parse_reports(self, data: CompressorData, reports: Any) -> None:
-        """Parse report objects into active_messages."""
         msgs: list[dict] = []
-        # _api_call already extracted resp["3"], so reports IS the data payload
-        report_list: list = []
-        if isinstance(reports, list):
-            report_list = reports
-        elif isinstance(reports, dict):
-            # Try numeric-keyed iteration
-            report_list = self._iter_numeric_dict(reports)
-            if not report_list:
-                # Maybe the data is nested one more level
-                rd = reports.get("3") or reports.get(3)
-                if isinstance(rd, list):
-                    report_list = rd
+        report_list = self._iter_numeric_dict(reports) if isinstance(reports, (dict, list)) else []
+        if not report_list and isinstance(reports, dict):
+            rd = reports.get("3") or reports.get(3)
+            if isinstance(rd, (list, dict)):
+                report_list = self._iter_numeric_dict(rd) if isinstance(rd, dict) else rd
 
         for entry in report_list:
             if isinstance(entry, dict):
