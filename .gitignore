@@ -22,3 +22,8 @@ Thumbs.db
 dist/
 build/
 *.egg-info/
+
+# Diagnostics
+*.log
+./Logs/
+./ReferenceData/
