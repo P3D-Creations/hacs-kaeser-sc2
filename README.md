@@ -1,6 +1,6 @@
 # Kaeser Sigma Control 2 — Home Assistant Integration
 
-[![HACS Validation](https://github.com/yourusername/hacs-kaeser-sc2/actions/workflows/validate.yml/badge.svg)](https://github.com/yourusername/hacs-kaeser-sc2/actions/workflows/validate.yml)
+[![HACS Validation](https://github.com/P3D-Creations/hacs-kaeser-sc2/actions/workflows/validate.yml/badge.svg)](https://github.com/yourusername/hacs-kaeser-sc2/actions/workflows/validate.yml)
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://github.com/hacs/integration)
 
 A native Home Assistant integration for **Kaeser rotary screw air compressors** equipped with the **Sigma Control 2** controller. Communicates directly with the controller's built-in web server — no MQTT broker required.
