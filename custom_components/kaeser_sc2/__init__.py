@@ -6,6 +6,7 @@ import logging
 from pathlib import Path
 
 from homeassistant.components.frontend import add_extra_js_url
+from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_USERNAME, Platform
 from homeassistant.core import HomeAssistant
@@ -26,8 +27,9 @@ type KaeserSC2ConfigEntry = ConfigEntry
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     """Register the custom card JS resource."""
-    # Serve the card JS file
-    hass.http.register_static_path(CARD_URL, str(CARD_JS_PATH), cache_headers=False)
+    await hass.http.async_register_static_paths([
+        StaticPathConfig(CARD_URL, str(CARD_JS_PATH), cache_headers=False),
+    ])
     add_extra_js_url(hass, CARD_URL)
     return True
 
