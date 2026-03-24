@@ -140,10 +140,6 @@ class SigmaControl2:
             self._session = aiohttp.ClientSession(
                 timeout=self.timeout,
                 cookie_jar=jar,
-                headers={
-                    "Content-Type": "application/json",
-                    "If-Modified-Since": "Thu, 03 Apr 2009 00:00:00 GMT",
-                },
             )
         return self._session
 
@@ -169,23 +165,48 @@ class SigmaControl2:
             session = await self._ensure_session()
 
             # Step 1: get Session-Key
-            async with session.get(f"{self.host}/login.html") as resp:
+            _LOGGER.debug("Auth step 1: GET %s/login.html", self.host)
+            async with session.get(
+                f"{self.host}/login.html",
+                headers={"Content-Type": "text/html"},
+            ) as resp:
+                status1 = resp.status
+                _LOGGER.debug(
+                    "Auth step 1 response: status=%s headers=%s",
+                    status1,
+                    {k: v for k, v in resp.headers.items()
+                     if k.lower() in ("content-type", "server", "set-cookie")},
+                )
                 resp.raise_for_status()
 
             self._session_key = self._get_cookie("Session-Key")
             if not self._session_key:
-                _LOGGER.warning("No Session-Key cookie from %s", self.host)
+                _LOGGER.warning(
+                    "No Session-Key cookie from %s. Cookies: %s",
+                    self.host,
+                    [c.key for c in session.cookie_jar],
+                )
                 return False
+            _LOGGER.debug("Auth step 1 OK: Session-Key=%s", self._session_key[:8] + "...")
 
             # Step 2-3: compute auth
             self._ha1 = _sha256(f"{self.username}:user@sc2:{self.password}")
             auth_hash = _sha256(f"{self._ha1}:{self._session_key}")
 
             # Step 4: login
+            _LOGGER.debug("Auth step 4: GET %s/login.html with auth headers", self.host)
             async with session.get(
                 f"{self.host}/login.html",
-                headers={"Username": self.username, "Session-Auth": auth_hash},
+                headers={
+                    "Content-Type": "text/html",
+                    "Username": self.username,
+                    "Session-Auth": auth_hash,
+                },
             ) as resp:
+                _LOGGER.debug(
+                    "Auth step 4 response: status=%s",
+                    resp.status,
+                )
                 resp.raise_for_status()
 
             session_id = self._get_cookie("Session-Id")
@@ -197,7 +218,9 @@ class SigmaControl2:
                 return True
 
             _LOGGER.warning(
-                "Login failed for %s (Session-Id=%s)", self.host, session_id
+                "Login failed for %s (Session-Id=%s). Cookies: %s",
+                self.host, session_id,
+                [c.key for c in session.cookie_jar],
             )
             return False
 
@@ -236,6 +259,28 @@ class SigmaControl2:
             )
             return False
 
+        # HTTP probe: simple GET / to verify the web server responds
+        try:
+            session = await self._ensure_session()
+            _LOGGER.debug("HTTP probe: GET %s/", self.host)
+            async with session.get(f"{self.host}/") as resp:
+                _LOGGER.debug(
+                    "HTTP probe response: status=%s server=%s content-type=%s",
+                    resp.status,
+                    resp.headers.get("Server", "?"),
+                    resp.headers.get("Content-Type", "?"),
+                )
+        except Exception as exc:
+            _LOGGER.warning(
+                "HTTP probe failed for %s: [%s] %s — "
+                "the controller may only accept one connection at a time. "
+                "Close any open browser tabs to this controller and retry.",
+                self.host, type(exc).__name__, exc,
+            )
+            # Don't return False yet; let authenticate() try
+            # Close the failed session so authenticate() starts fresh
+            await self.close()
+
         try:
             ok = await self.authenticate()
             if not ok:
@@ -272,7 +317,10 @@ class SigmaControl2:
     async def _post_json(self, payload: dict) -> dict | None:
         try:
             session = await self._ensure_session()
-            headers: dict[str, str] = {}
+            headers: dict[str, str] = {
+                "Content-Type": "application/json",
+                "If-Modified-Since": "Thu, 03 Apr 2009 00:00:00 GMT",
+            }
             auth = self._compute_session_auth()
             if auth:
                 headers["Session-Auth"] = auth
