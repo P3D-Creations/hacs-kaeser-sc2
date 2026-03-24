@@ -20,15 +20,20 @@ _LOGGER = logging.getLogger(__name__)
 PLATFORMS: list[Platform] = [Platform.SENSOR, Platform.BINARY_SENSOR]
 
 CARD_URL = "/kaeser_sc2/kaeser-sc2-card.js"
-CARD_JS_PATH = Path(__file__).parent.parent.parent / "js" / "kaeser-sc2-card.js"
+CARD_JS_PATH = Path(__file__).parent / "frontend" / "kaeser-sc2-card.js"
 IMAGES_URL = "/kaeser_sc2/images"
-IMAGES_PATH = Path(__file__).parent.parent.parent / "js" / "images"
+IMAGES_PATH = Path(__file__).parent / "frontend" / "images"
 
 type KaeserSC2ConfigEntry = ConfigEntry
 
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     """Register the custom card JS and static image assets."""
+    _LOGGER.debug(
+        "Registering frontend: JS=%s (exists=%s), images=%s (exists=%s)",
+        CARD_JS_PATH, CARD_JS_PATH.exists(),
+        IMAGES_PATH, IMAGES_PATH.exists(),
+    )
     await hass.http.async_register_static_paths([
         StaticPathConfig(CARD_URL, str(CARD_JS_PATH), cache_headers=False),
         StaticPathConfig(IMAGES_URL, str(IMAGES_PATH), cache_headers=True),
