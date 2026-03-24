@@ -11,7 +11,7 @@
 (function () {
   "use strict";
 
-  var CARD_VERSION = "4.0.1";
+  var CARD_VERSION = "4.0.2";
 
   /* ── Card-picker registration — MUST run before the guard ──────
    * If the browser has a cached old version that already called
@@ -122,18 +122,29 @@
     set hass(hass) {
       this._hass = hass;
       if (!this._config) return;
-      try {
-        this._ensureRendered();
-        this._refresh();
-      } catch (e) {
-        console.error("[kaeser-sc2-card] render error:", e);
-      }
+      this._tryRender();
     }
 
     setConfig(config) {
       if (!config) throw new Error("Invalid configuration");
       this._config = config;
       this._rendered = false;
+      /* If hass is already available (e.g. dashboard refresh), render now */
+      if (this._hass) this._tryRender();
+    }
+
+    _tryRender() {
+      try {
+        this._ensureRendered();
+        this._refresh();
+      } catch (e) {
+        console.error("[kaeser-sc2-card] render error:", e);
+        /* Show visible error instead of empty/spinning card */
+        this.shadowRoot.innerHTML =
+          "<ha-card><div style='padding:16px;color:red;font-family:monospace'>" +
+          "<b>kaeser-sc2-card error:</b><br>" + this._esc(String(e)) +
+          "</div></ha-card>";
+      }
     }
 
     getCardSize() { return 9; }

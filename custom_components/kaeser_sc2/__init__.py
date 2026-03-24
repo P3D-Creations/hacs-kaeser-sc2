@@ -20,7 +20,7 @@ _LOGGER = logging.getLogger(__name__)
 
 PLATFORMS: list[Platform] = [Platform.SENSOR, Platform.BINARY_SENSOR]
 
-CARD_URL = "/kaeser_sc2/kaeser-sc2-card.js"
+CARD_JS_URL_BASE = "/kaeser_sc2/kaeser-sc2-card.js"
 CARD_JS_PATH = Path(__file__).parent / "frontend" / "kaeser-sc2-card.js"
 IMAGES_URL = "/kaeser_sc2/images"
 IMAGES_PATH = Path(__file__).parent / "frontend" / "images"
@@ -30,16 +30,30 @@ type KaeserSC2ConfigEntry = ConfigEntry
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     """Register the custom card JS and static image assets."""
+    # Read version from manifest for cache-busting query string
+    import json
+    manifest_path = Path(__file__).parent / "manifest.json"
+    try:
+        manifest = json.loads(manifest_path.read_text())
+        version = manifest.get("version", "0")
+    except Exception:
+        version = "0"
+
+    card_url_versioned = f"{CARD_JS_URL_BASE}?v={version}"
+
     _LOGGER.debug(
-        "Registering frontend: JS=%s (exists=%s), images=%s (exists=%s)",
+        "Registering frontend: JS=%s (exists=%s), images=%s (exists=%s), url=%s",
         CARD_JS_PATH, CARD_JS_PATH.exists(),
         IMAGES_PATH, IMAGES_PATH.exists(),
+        card_url_versioned,
     )
     await hass.http.async_register_static_paths([
-        StaticPathConfig(CARD_URL, str(CARD_JS_PATH), cache_headers=False),
+        StaticPathConfig(CARD_JS_URL_BASE, str(CARD_JS_PATH), cache_headers=False),
         StaticPathConfig(IMAGES_URL, str(IMAGES_PATH), cache_headers=True),
     ])
-    add_extra_js_url(hass, CARD_URL)
+    # Use versioned URL for cache-busting (HA frontend/service worker may
+    # cache the JS even when cache_headers=False)
+    add_extra_js_url(hass, card_url_versioned)
     return True
 
 
