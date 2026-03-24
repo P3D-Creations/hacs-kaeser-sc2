@@ -21,14 +21,17 @@ PLATFORMS: list[Platform] = [Platform.SENSOR, Platform.BINARY_SENSOR]
 
 CARD_URL = "/kaeser_sc2/kaeser-sc2-card.js"
 CARD_JS_PATH = Path(__file__).parent.parent.parent / "js" / "kaeser-sc2-card.js"
+IMAGES_URL = "/kaeser_sc2/images"
+IMAGES_PATH = Path(__file__).parent.parent.parent / "js" / "images"
 
 type KaeserSC2ConfigEntry = ConfigEntry
 
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
-    """Register the custom card JS resource."""
+    """Register the custom card JS and static image assets."""
     await hass.http.async_register_static_paths([
         StaticPathConfig(CARD_URL, str(CARD_JS_PATH), cache_headers=False),
+        StaticPathConfig(IMAGES_URL, str(IMAGES_PATH), cache_headers=True),
     ])
     add_extra_js_url(hass, CARD_URL)
     return True
