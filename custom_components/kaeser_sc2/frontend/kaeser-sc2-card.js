@@ -1,5 +1,5 @@
 /**
- * Kaeser Sigma Control 2 — Custom Lovelace Card  v4.0.0
+ * Kaeser Sigma Control 2 — Custom Lovelace Card  v4.0.1
  *
  * Pixel-accurate replica of the SC2 controller front panel.
  *  - Device picker dropdown in editor (auto-discovers Kaeser entities)
@@ -11,10 +11,34 @@
 (function () {
   "use strict";
 
-  /* Guard against double-registration */
+  var CARD_VERSION = "4.0.1";
+
+  /* ── Card-picker registration — MUST run before the guard ──────
+   * If the browser has a cached old version that already called
+   * customElements.define(), the guard below would exit the IIFE
+   * and skip window.customCards.push(), causing "card does not exist".
+   * Registering FIRST guarantees the picker always knows about us.
+   * ─────────────────────────────────────────────────────────────── */
+  window.customCards = window.customCards || [];
+  if (!window.customCards.some(function(c) { return c.type === "kaeser-sc2-card"; })) {
+    window.customCards.push({
+      type: "kaeser-sc2-card",
+      name: "Kaeser Sigma Control 2",
+      description: "Pixel-accurate replica of the SC2 controller front panel with live data and LEDs.",
+      preview: false,
+      documentationURL: "https://github.com/P3D-Creations/hacs-kaeser-sc2"
+    });
+  }
+
+  console.info(
+    "%c KAESER-SC2-CARD %c v" + CARD_VERSION + " ",
+    "color:#fff;background:#1a1a1a;font-weight:700;padding:2px 6px;border-radius:4px 0 0 4px",
+    "color:#1a1a1a;background:#FFCC00;font-weight:700;padding:2px 6px;border-radius:0 4px 4px 0"
+  );
+
+  /* Guard against double customElements.define (throws if called twice) */
   if (customElements.get("kaeser-sc2-card")) return;
 
-  var CARD_VERSION = "4.0.0";
   var IMG_BASE = "/kaeser_sc2/images";
 
   /* ═══════════════════════════════════════════════════════════════
@@ -590,20 +614,5 @@
    * ╚═══════════════════════════════════════════════════════════════╝ */
   customElements.define("kaeser-sc2-card", KaeserSC2Card);
   customElements.define("kaeser-sc2-card-editor", KaeserSC2CardEditor);
-
-  window.customCards = window.customCards || [];
-  window.customCards.push({
-    type: "kaeser-sc2-card",
-    name: "Kaeser Sigma Control 2",
-    description: "Pixel-accurate replica of the SC2 controller front panel with live data and LEDs.",
-    preview: false,
-    documentationURL: "https://github.com/P3D-Creations/hacs-kaeser-sc2"
-  });
-
-  console.info(
-    "%c KAESER-SC2-CARD %c v" + CARD_VERSION + " ",
-    "color:#fff;background:#1a1a1a;font-weight:700;padding:2px 6px;border-radius:4px 0 0 4px",
-    "color:#1a1a1a;background:#FFCC00;font-weight:700;padding:2px 6px;border-radius:0 4px 4px 0"
-  );
 
 })();
