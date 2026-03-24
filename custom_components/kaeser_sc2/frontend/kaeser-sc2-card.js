@@ -1,68 +1,75 @@
 /**
- * Kaeser Sigma Control 2 — Custom Lovelace Card  v2.0.0
+ * Kaeser Sigma Control 2 — Custom Lovelace Card  v3.0.0
  *
- * Pixel-accurate replica of the SC2 controller front panel.
- * Uses the actual SC2 background image (sc2.jpg) with LED indicators
- * and LCD text overlaid at the exact positions used by the controller's
- * own web interface.
+ * Pixel-accurate replica of the SC2 controller front panel with:
+ *  - Visual config editor for entity assignment
+ *  - Fine-tuning controls for position, size, and font of every element
  *
- * Configuration (YAML):
+ * Configuration (YAML or visual editor):
  *   type: custom:kaeser-sc2-card
- *   entity_prefix: shop_air_compressor   # prefix used when you added the device
- *   title: Shop Air Compressor           # optional header text
+ *   entity_prefix: shop_air_compressor
+ *   title: Shop Air Compressor
  */
 
-const CARD_VERSION = "2.0.0";
-
-/* ── Image base URL (set by __init__.py static-path registration) ── */
+const CARD_VERSION = "3.0.0";
 const IMG_BASE = "/kaeser_sc2/images";
 
-/* ── SC2 panel pixel dimensions (from sc2.jpg) ── */
+/* ═══════════════════════════════════════════════════════════════
+ * Default layout constants (all in px at 750×493 native)
+ * These become the base values; user offsets are added on top.
+ * ═══════════════════════════════════════════════════════════════ */
+const DEFAULTS = {
+  /* Status bar */
+  sb_left: 198,  sb_top: 88,  sb_width: 345, sb_height: 20,
+  sb_font: 16,
+
+  /* LCD content area */
+  lcd_left: 198, lcd_top: 110, lcd_width: 345, lcd_height: 155,
+  lcd_font: 16,
+
+  /* LED dot size */
+  led_size: 13,
+
+  /* Individual LED positions */
+  led_error_x: 43,       led_error_y: 44,
+  led_com_error_x: 43,   led_com_error_y: 107,
+  led_maintenance_x: 43, led_maintenance_y: 169,
+  led_voltage_x: 43,     led_voltage_y: 256,
+  led_load_x: 43,        led_load_y: 388,
+  led_idle_x: 43,        led_idle_y: 424,
+  led_remote_x: 225,     led_remote_y: 389,
+  led_clock_x: 300,      led_clock_y: 389,
+  led_power_on_x: 643,   led_power_on_y: 321,
+};
+
 const SC2_W = 750;
 const SC2_H = 493;
 
-/* ── LCD geometry inside the SC2 image ── */
-const LCD_LEFT   = 198;
-const LCD_TOP_SB = 88;   // status bar top
-const LCD_SB_H   = 20;   // status bar height
-const LCD_TOP    = 112;   // start of home screen content
-const LCD_WIDTH  = 345;
-const LCD_HEIGHT = 140;
-const CHAR_W     = 10;    // monospace character width at 16px
-
-/* ── LED positions (left, top) inside the 750x493 image ── */
-const LED_POSITIONS = {
-  led_error:       { x:  43, y:  44 },
-  led_com_error:   { x:  43, y: 107 },
-  led_maintenance: { x:  43, y: 169 },
-  led_voltage:     { x:  43, y: 256 },
-  led_load:        { x:  43, y: 388 },
-  led_idle:        { x:  43, y: 424 },
-  led_remote:      { x: 225, y: 389 },
-  led_clock:       { x: 300, y: 389 },
-  led_power_on:    { x: 643, y: 321 },
-};
-
-/* ── LED colour mapping ── */
+const LED_NAMES = [
+  "led_error","led_com_error","led_maintenance","led_voltage",
+  "led_load","led_idle","led_remote","led_clock","led_power_on"
+];
 const LED_COLOURS = {
-  led_error:       "red",
-  led_com_error:   "red",
-  led_maintenance: "orange",
-  led_voltage:     "green",
-  led_load:        "green",
-  led_idle:        "green",
-  led_remote:      "green",
-  led_clock:       "green",
-  led_power_on:    "green",
+  led_error:"red", led_com_error:"red", led_maintenance:"orange",
+  led_voltage:"green", led_load:"green", led_idle:"green",
+  led_remote:"green", led_clock:"green", led_power_on:"green",
+};
+const LED_LABELS = {
+  led_error:"Error", led_com_error:"Comm Error", led_maintenance:"Maintenance",
+  led_voltage:"Voltage", led_load:"Load", led_idle:"Idle",
+  led_remote:"Remote", led_clock:"Clock", led_power_on:"Power On",
 };
 
-/* ── Percentage helpers (for responsive positioning) ── */
-function pctX(px)  { return (px / SC2_W * 100).toFixed(3) + "%"; }
-function pctY(px)  { return (px / SC2_H * 100).toFixed(3) + "%"; }
-function pctW(px)  { return (px / SC2_W * 100).toFixed(3) + "%"; }
-function pctH(px)  { return (px / SC2_H * 100).toFixed(3) + "%"; }
-function lcdPct(px){ return (px / LCD_WIDTH * 100).toFixed(2) + "%"; }
-
+/* helpers */
+function _v(cfg, key) {
+  /* return config value or default */
+  if (cfg && cfg[key] !== undefined && cfg[key] !== null && cfg[key] !== "") {
+    return Number(cfg[key]);
+  }
+  return DEFAULTS[key] !== undefined ? DEFAULTS[key] : 0;
+}
+function _pctX(px) { return (px / SC2_W * 100).toFixed(3) + "%"; }
+function _pctY(px) { return (px / SC2_H * 100).toFixed(3) + "%"; }
 function _clean(val) {
   return (!val || val === "—" || val === "unknown" || val === "unavailable") ? "" : val;
 }
@@ -71,210 +78,159 @@ function _hVal(val) {
 }
 
 
+/* ╔═══════════════════════════════════════════════════════════════╗
+ * ║                     MAIN CARD CLASS                          ║
+ * ╚═══════════════════════════════════════════════════════════════╝ */
 class KaeserSC2Card extends HTMLElement {
 
-  /* ===========================================================
-   * HA lifecycle
-   * =========================================================== */
+  static getConfigElement() {
+    return document.createElement("kaeser-sc2-card-editor");
+  }
+  static getStubConfig() {
+    return { entity_prefix: "", title: "Kaeser SC2" };
+  }
+
   set hass(hass) {
     this._hass = hass;
     if (!this._config) return;
-    if (!this._rendered) this._render();
+    this._ensureRendered();
     this._refresh();
   }
 
   setConfig(config) {
-    if (!config.entity_prefix) {
-      throw new Error("You must define entity_prefix (e.g. shop_air_compressor)");
-    }
     this._config = config;
-    this._prefix = config.entity_prefix;
-    this._title  = config.title || "Kaeser SC2";
-    this._rendered = false;
+    this._rendered = false;   /* force re-render when config changes */
   }
 
   getCardSize() { return 9; }
 
-  static getStubConfig() {
-    return { entity_prefix: "shop_air_compressor", title: "Shop Air Compressor" };
+  /* ── entity helpers ─────────────────────────────────────── */
+  _entity(domain, suffix) {
+    var prefix = this._config.entity_prefix || "";
+    if (!prefix) return null;
+    var id = domain + "." + prefix + "_" + suffix;
+    return (this._hass && this._hass.states) ? this._hass.states[id] || null : null;
   }
-
-  /* ===========================================================
-   * State helpers
-   * =========================================================== */
   _state(suffix) {
-    const id = "sensor." + this._prefix + "_" + suffix;
-    const s  = this._hass && this._hass.states ? this._hass.states[id] : null;
-    return s ? s.state : "—";
+    var e = this._entity("sensor", suffix);
+    return e ? e.state : "—";
   }
   _binaryState(suffix) {
-    const id = "binary_sensor." + this._prefix + "_" + suffix;
-    const s  = this._hass && this._hass.states ? this._hass.states[id] : null;
-    return s ? s.state : "off";
+    var e = this._entity("binary_sensor", suffix);
+    return e ? e.state : "off";
   }
   _unit(suffix) {
-    const id = "sensor." + this._prefix + "_" + suffix;
-    const s  = this._hass && this._hass.states ? this._hass.states[id] : null;
-    return (s && s.attributes && s.attributes.unit_of_measurement) ? s.attributes.unit_of_measurement : "";
+    var e = this._entity("sensor", suffix);
+    return (e && e.attributes && e.attributes.unit_of_measurement) || "";
   }
 
-  /* ===========================================================
-   * Build the card DOM (once)
-   * =========================================================== */
-  _render() {
-    this.innerHTML = "";
+  /* ── render ────────────────────────────────────────────── */
+  _ensureRendered() {
+    if (this._rendered) return;
+    /* Tear down previous shadow */
+    if (this.shadowRoot) {
+      this.shadowRoot.innerHTML = "";
+    } else {
+      this.attachShadow({ mode: "open" });
+    }
+    this._buildCard();
+    this._rendered = true;
+  }
 
-    /* Shadow DOM keeps styles isolated */
-    const shadow = this.attachShadow({ mode: "open" });
+  _buildCard() {
+    var c = this._config;
+    var shadow = this.shadowRoot;
 
-    /* ── Stylesheet ── */
-    const style = document.createElement("style");
-    style.textContent = [
-      ":host { display: block; }",
+    /* Resolve all layout values from config (with defaults) */
+    var sb_l = _v(c,"sb_left"),  sb_t = _v(c,"sb_top"),  sb_w = _v(c,"sb_width"),  sb_h = _v(c,"sb_height"), sb_f = _v(c,"sb_font");
+    var lcd_l= _v(c,"lcd_left"), lcd_t= _v(c,"lcd_top"), lcd_w= _v(c,"lcd_width"), lcd_h= _v(c,"lcd_height"),lcd_f= _v(c,"lcd_font");
+    var led_sz = _v(c,"led_size");
 
-      /* Card */
-      "ha-card { overflow:hidden; border-radius:12px; background:#2c2c2c; }",
-
-      /* Header */
-      ".sc2-header { display:flex; align-items:center; justify-content:space-between; background:#FFCC00; color:#1a1a1a; padding:6px 14px; font:700 14px/1.2 'Segoe UI',Arial,sans-serif; }",
-      ".sc2-header .brand { font-size:11px; font-weight:400; opacity:.7; }",
-
-      /* Panel wrapper — maintains 750:493 aspect ratio */
-      ".sc2-panel { position:relative; width:100%; padding-bottom:" + pctH(SC2_H).replace('%','') / SC2_W * SC2_W + "%; overflow:hidden; }",
-      ".sc2-panel { padding-bottom:" + (SC2_H / SC2_W * 100).toFixed(4) + "%; background:url('" + IMG_BASE + "/sc2.jpg') center/100% 100% no-repeat; }",
-
-      /* Inner coordinate layer */
-      ".sc2-inner { position:absolute; inset:0; }",
-
-      /* Status bar (black top row of LCD) */
-      ".lcd-sb { position:absolute; left:" + pctX(LCD_LEFT) + "; top:" + pctY(LCD_TOP_SB) + "; width:" + pctW(LCD_WIDTH) + "; height:" + pctH(LCD_SB_H) + "; background:#000; overflow:hidden; }",
-      ".lcd-sb span { position:absolute; top:0; height:100%; display:flex; align-items:center; font:normal 16px/1 'Courier New','Arial Unicode MS',monospace; color:#fff; white-space:nowrap; }",
-      ".sb-p { left:0; width:" + lcdPct(80) + "; justify-content:flex-end; }",
-      ".sb-t { left:" + lcdPct(120) + "; width:" + lcdPct(70) + "; justify-content:flex-end; }",
-      ".sb-d { left:" + lcdPct(250) + "; width:" + lcdPct(95) + "; justify-content:flex-end; }",
-
-      /* LCD home-screen content area */
-      ".lcd-c { position:absolute; left:" + pctX(LCD_LEFT) + "; top:" + pctY(LCD_TOP) + "; width:" + pctW(LCD_WIDTH) + "; height:" + pctH(LCD_HEIGHT) + "; overflow:hidden; }",
-      ".lcd-ln { position:relative; height:" + (100/7).toFixed(2) + "%; box-sizing:border-box; }",
-      ".lcd-ln span { position:absolute; top:0; height:100%; display:flex; align-items:center; font:normal 16px/1 'Courier New','Arial Unicode MS',monospace; color:#454545; white-space:nowrap; overflow:hidden; }",
-
-      /* Responsive font scaling: 16px at 750px native width */
-      ".lcd-sb span, .lcd-ln span { font-size:clamp(7px, 2.13cqw, 16px); }",
-      /* Container query fallback — use vw-based if cq not supported */
-      "@supports not (font-size: 1cqw) { .lcd-sb span, .lcd-ln span { font-size:clamp(7px, 2.13vw, 16px); } }",
-
-      /* LED images */
-      ".led-i { position:absolute; width:" + pctW(13) + "; height:" + pctH(13) + "; image-rendering:auto; }",
-      ".led-i.flash { animation:led-blink .6s infinite; }",
-      "@keyframes led-blink { 0%,100%{opacity:1} 50%{opacity:.12} }",
-
-      /* Footer */
-      ".sc2-footer { padding:4px 14px; font:400 10px/1.4 'Segoe UI',Arial,sans-serif; color:#636e72; text-align:right; }",
-    ].join("\n");
+    /* ── CSS ── */
+    var style = document.createElement("style");
+    style.textContent = `
+:host { display:block; }
+ha-card { overflow:hidden; border-radius:12px; background:#2c2c2c; }
+.hdr { display:flex; align-items:center; justify-content:space-between; background:#FFCC00; color:#1a1a1a; padding:6px 14px; font:700 14px/1.2 'Segoe UI',Arial,sans-serif; }
+.hdr .b { font-size:11px; font-weight:400; opacity:.7; }
+.panel { position:relative; width:100%; padding-bottom:${(SC2_H/SC2_W*100).toFixed(4)}%; background:url('${IMG_BASE}/sc2.jpg') center/100% 100% no-repeat; overflow:hidden; }
+.inner { position:absolute; inset:0; }
+.sb { position:absolute; left:${_pctX(sb_l)}; top:${_pctY(sb_t)}; width:${_pctX(sb_w)}; height:${_pctY(sb_h)}; background:#000; overflow:hidden; }
+.sb span { position:absolute; top:0; height:100%; display:flex; align-items:center; font:normal ${sb_f}px/1 'Courier New','Arial Unicode MS',monospace; color:#fff; white-space:nowrap; }
+.lcd { position:absolute; left:${_pctX(lcd_l)}; top:${_pctY(lcd_t)}; width:${_pctX(lcd_w)}; height:${_pctY(lcd_h)}; overflow:hidden; }
+.ln { position:relative; box-sizing:border-box; }
+.ln span { position:absolute; top:0; height:100%; display:flex; align-items:center; font:normal ${lcd_f}px/1 'Courier New','Arial Unicode MS',monospace; color:#454545; white-space:nowrap; overflow:hidden; }
+.sb span, .ln span { font-size:clamp(6px, 2.13cqw, ${Math.max(sb_f,lcd_f)}px); }
+@supports not (font-size:1cqw) { .sb span, .ln span { font-size:clamp(6px, 2.13vw, ${Math.max(sb_f,lcd_f)}px); } }
+.led { position:absolute; width:${_pctX(led_sz)}; height:${_pctY(led_sz)}; }
+.led.flash { animation:blink .6s infinite; }
+@keyframes blink { 0%,100%{opacity:1} 50%{opacity:.12} }
+.ft { padding:4px 14px; font:400 10px/1.4 'Segoe UI',Arial,sans-serif; color:#636e72; text-align:right; }
+`;
     shadow.appendChild(style);
 
-    /* ── Card element ── */
-    const card = document.createElement("ha-card");
+    var card = document.createElement("ha-card");
 
     /* Header */
-    const hdr = document.createElement("div");
-    hdr.className = "sc2-header";
-    hdr.innerHTML = "<span>" + this._esc(this._title) + "</span><span class='brand'>KAESER SIGMA CONTROL 2</span>";
+    var title = c.title || "Kaeser SC2";
+    var hdr = document.createElement("div"); hdr.className = "hdr";
+    hdr.innerHTML = "<span>" + this._esc(title) + "</span><span class='b'>KAESER SIGMA CONTROL 2</span>";
     card.appendChild(hdr);
 
     /* Panel */
-    const panel = document.createElement("div");
-    panel.className = "sc2-panel";
-    const inner = document.createElement("div");
-    inner.className = "sc2-inner";
+    var panel = document.createElement("div"); panel.className = "panel";
+    var inner = document.createElement("div"); inner.className = "inner";
 
-    /* ── Status bar ── */
-    const sb = document.createElement("div");
-    sb.className = "lcd-sb";
-    sb.innerHTML = ""
-      + "<span class='sb-p' id='sb-p'></span>"
-      + "<span class='sb-t' id='sb-t'></span>"
-      + "<span class='sb-d' id='sb-d'></span>";
+    /* Status bar */
+    var sb = document.createElement("div"); sb.className = "sb";
+    var sbW = sb_w;
+    function sp(left, width, id, align) {
+      return "<span id='" + id + "' style='left:" + (left/sbW*100).toFixed(2) + "%;width:" + (width/sbW*100).toFixed(2) + "%;justify-content:" + (align||"flex-end") + "'></span>";
+    }
+    sb.innerHTML = sp(0,80,"sb-p") + sp(120,70,"sb-t") + sp(250,95,"sb-d");
     inner.appendChild(sb);
 
-    /* ── LCD content (7 lines) ── */
-    const lcd = document.createElement("div");
-    lcd.className = "lcd-c";
+    /* LCD content — 8 lines */
+    var lcd = document.createElement("div"); lcd.className = "lcd";
+    var lW = lcd_w;
+    function lp(left,width,id,align,text) {
+      var s = "left:" + (left/lW*100).toFixed(2) + "%;width:" + (width/lW*100).toFixed(2) + "%";
+      if (align) s += ";justify-content:" + align;
+      var inner = text || "";
+      return "<span " + (id ? "id='"+id+"'" : "") + " style='" + s + "'>" + inner + "</span>";
+    }
+    var sep = "<span style='left:0;width:100%'>------------------------------</span>";
 
-    // Line 0: separator
-    lcd.appendChild(this._sep());
-    // Line 1: state
-    lcd.appendChild(this._ln("<span id='lcd-st' style='left:0;width:100%'></span>"));
-    // Line 2: separator
-    lcd.appendChild(this._sep());
-    // Line 3: Key – val | pA – val
-    lcd.appendChild(this._ln(""
-      + "<span style='left:0;width:" + lcdPct(70) + "'>Key</span>"
-      + "<span style='left:" + lcdPct(80)  + ";width:" + lcdPct(10) + "'>-</span>"
-      + "<span id='lcd-key' style='left:" + lcdPct(100) + ";width:" + lcdPct(40) + "'></span>"
-      + "<span style='left:" + lcdPct(150) + ";width:" + lcdPct(10) + "'>¦</span>"
-      + "<span style='left:" + lcdPct(160) + ";width:" + lcdPct(20) + ";justify-content:flex-end'>pA</span>"
-      + "<span style='left:" + lcdPct(190) + ";width:" + lcdPct(10) + "'>-</span>"
-      + "<span id='lcd-pa' style='left:" + lcdPct(210) + ";width:" + lcdPct(90) + "'></span>"
-    ));
-    // Line 4: separator
-    lcd.appendChild(this._sep());
-    // Line 5: Run
-    lcd.appendChild(this._ln(""
-      + "<span style='left:" + lcdPct(160) + ";width:" + lcdPct(60) + "'>Run</span>"
-      + "<span id='lcd-run' style='left:" + lcdPct(230) + ";width:" + lcdPct(70) + ";justify-content:flex-end'></span>"
-    ));
-    // Line 6: Load
-    lcd.appendChild(this._ln(""
-      + "<span style='left:" + lcdPct(160) + ";width:" + lcdPct(60) + "'>Load</span>"
-      + "<span id='lcd-load' style='left:" + lcdPct(230) + ";width:" + lcdPct(70) + ";justify-content:flex-end'></span>"
-    ));
-
+    var lines = [
+      sep,
+      lp(0, lW, "lcd-st", "flex-start"),
+      sep,
+      lp(0,70,null,null,"Key") + lp(80,10,null,null,"-") + lp(100,40,"lcd-key") + lp(150,10,null,null,"¦") + lp(160,20,null,"flex-end","pA") + lp(190,10,null,null,"-") + lp(210,135,"lcd-pa"),
+      sep,
+      lp(160,60,null,null,"Run") + lp(230,115,"lcd-run","flex-end"),
+      lp(160,60,null,null,"Load") + lp(230,115,"lcd-load","flex-end"),
+      lp(0,220,null,null,"Maintenance in") + lp(230,115,"lcd-mt","flex-end"),
+    ];
+    var lineH = (100 / lines.length).toFixed(3) + "%";
+    for (var i = 0; i < lines.length; i++) {
+      var d = document.createElement("div"); d.className = "ln";
+      d.style.height = lineH;
+      d.innerHTML = lines[i];
+      lcd.appendChild(d);
+    }
     inner.appendChild(lcd);
 
-    /* ── Maintenance line: placed below the 7-line lcd-c area ── */
-    /* The real SC2 displays 7 visible lines but the Run/Load lines only
-       take up positions 5-6. Maintenance sits at line-7 which may clip.
-       We render it inside the LCD content area by using a slightly taller
-       region or we can just add an 8th line. Since we set 7 lines, let's
-       actually use 8 lines and adjust the height. */
-
-    /* Actually, let's restructure: the real display has these lines in the content area:
-       0: ----- separator
-       1: On load  (state)
-       2: ----- separator
-       3: Key - on ¦ pA - Load
-       4: ----- separator
-       5: Run          6169h
-       6: Load         2535h
-       But there isn't a "Load" line on the default SC2 display if the controller
-       doesn't show it. The real captured data shows "Run" and "Maintenance in" labels.
-       From the 1.json capture: objects 14="Run", 15=6169h, 16="Load", 17=2535h, 18="Maintenance in", 19=468h
-       So the real display actually has: Run, Load, Maintenance in — BUT the web
-       interface only shows Run and Maintenance on the home screen overview.
-       Let's show all three + Maintenance on an 8th line. We already have 7 lines.
-       Let me adjust back to the data. */
-
-    /* Since we already added lines 5 (Run) and 6 (Load), we need line 7 (Maintenance).
-       But we only allocated 7 lines (0-6). Let's just add an 8th line inside lcd-c
-       and use height: 12.5% (100/8) instead. We'll fix the CSS. */
-
-    // Line 7: Maintenance in
-    lcd.appendChild(this._ln(""
-      + "<span style='left:0;width:" + lcdPct(220) + "'>Maintenance in</span>"
-      + "<span id='lcd-mt' style='left:" + lcdPct(230) + ";width:" + lcdPct(70) + ";justify-content:flex-end'></span>"
-    ));
-
-    /* ── LED indicators ── */
-    for (var name in LED_POSITIONS) {
-      if (!LED_POSITIONS.hasOwnProperty(name)) continue;
-      var pos = LED_POSITIONS[name];
+    /* LEDs */
+    for (var li = 0; li < LED_NAMES.length; li++) {
+      var name = LED_NAMES[li];
+      var lx = _v(c, name + "_x");
+      var ly = _v(c, name + "_y");
       var img = document.createElement("img");
-      img.className = "led-i";
+      img.className = "led";
       img.id = "led-" + name;
       img.src = IMG_BASE + "/led_off.png";
-      img.style.left = pctX(pos.x);
-      img.style.top  = pctY(pos.y);
+      img.style.left = _pctX(lx);
+      img.style.top  = _pctY(ly);
       inner.appendChild(img);
     }
 
@@ -282,96 +238,47 @@ class KaeserSC2Card extends HTMLElement {
     card.appendChild(panel);
 
     /* Footer */
-    var footer = document.createElement("div");
-    footer.className = "sc2-footer";
-    footer.textContent = "kaeser-sc2-card v" + CARD_VERSION;
-    card.appendChild(footer);
+    var ft = document.createElement("div"); ft.className = "ft";
+    ft.textContent = "kaeser-sc2-card v" + CARD_VERSION;
+    card.appendChild(ft);
 
     shadow.appendChild(card);
-    this._shadow = shadow;
-    this._rendered = true;
-
-    /* Now fix the line heights: we have 8 lines, so each is 12.5% */
-    var lines = lcd.querySelectorAll(".lcd-ln");
-    for (var i = 0; i < lines.length; i++) {
-      lines[i].style.height = (100 / lines.length).toFixed(2) + "%";
-    }
   }
 
-  _sep() {
-    var d = document.createElement("div");
-    d.className = "lcd-ln";
-    d.innerHTML = "<span style='left:0;width:100%;color:#454545'>------------------------------</span>";
-    return d;
-  }
-  _ln(html) {
-    var d = document.createElement("div");
-    d.className = "lcd-ln";
-    d.innerHTML = html;
-    return d;
-  }
-  _esc(s) {
-    var d = document.createElement("div");
-    d.textContent = s;
-    return d.innerHTML;
-  }
+  _esc(s) { var d = document.createElement("div"); d.textContent = s; return d.innerHTML; }
 
-  /* ===========================================================
-   * Refresh entity values
-   * =========================================================== */
+  /* ── refresh ───────────────────────────────────────────── */
   _refresh() {
-    if (!this._shadow) return;
+    if (!this.shadowRoot) return;
     var self = this;
-    function $(id) { return self._shadow.getElementById(id); }
+    function $(id) { return self.shadowRoot.getElementById(id); }
 
-    /* Status bar */
-    var p  = this._state("pressure");
-    var pU = this._unit("pressure") || "psi";
-    var t  = this._state("temperature");
-    var tU = this._unit("temperature") || "°F";
+    var p  = this._state("pressure"), pU = this._unit("pressure") || "psi";
+    var t  = this._state("temperature"), tU = this._unit("temperature") || "°F";
     var tm = this._state("controller_time");
 
-    var sbP = $("sb-p");
-    var sbT = $("sb-t");
-    var sbD = $("sb-d");
-    if (sbP) sbP.textContent = _clean(p) ? p + pU : "";
+    var sbP = $("sb-p"), sbT = $("sb-t"), sbD = $("sb-d");
+    if (sbP) sbP.textContent = _clean(p)  ? p + pU : "";
     if (sbT) sbT.textContent = _clean(tm) || "";
     if (sbD) sbD.textContent = _clean(t)  ? t + tU : "";
 
-    /* LCD data */
-    var st = $("lcd-st");
-    var ky = $("lcd-key");
-    var pa = $("lcd-pa");
-    var rn = $("lcd-run");
-    var ld = $("lcd-load");
-    var mt = $("lcd-mt");
+    var lcdSt = $("lcd-st"); if (lcdSt) lcdSt.textContent = _clean(this._state("state"));
+    var lcdKy = $("lcd-key"); if (lcdKy) lcdKy.textContent = _clean(this._state("key_switch"));
+    var lcdPa = $("lcd-pa"); if (lcdPa) lcdPa.textContent = _clean(this._state("pa_status"));
+    var lcdRn = $("lcd-run"); if (lcdRn) lcdRn.textContent = _hVal(this._state("run_hours"));
+    var lcdLd = $("lcd-load"); if (lcdLd) lcdLd.textContent = _hVal(this._state("load_hours"));
+    var lcdMt = $("lcd-mt"); if (lcdMt) lcdMt.textContent = _hVal(this._state("maintenance_in"));
 
-    if (st) st.textContent = _clean(this._state("state"));
-    if (ky) ky.textContent = _clean(this._state("key_switch"));
-    if (pa) pa.textContent = _clean(this._state("pa_status"));
-    if (rn) rn.textContent = _hVal(this._state("run_hours"));
-    if (ld) ld.textContent = _hVal(this._state("load_hours"));
-    if (mt) mt.textContent = _hVal(this._state("maintenance_in"));
-
-    /* LEDs */
-    for (var name in LED_POSITIONS) {
-      if (!LED_POSITIONS.hasOwnProperty(name)) continue;
+    for (var li = 0; li < LED_NAMES.length; li++) {
+      var name = LED_NAMES[li];
       var img = $("led-" + name);
       if (!img) continue;
-
       var raw = this._binaryState(name);
-      var entityId = "binary_sensor." + this._prefix + "_" + name;
-      var entity = (this._hass && this._hass.states) ? this._hass.states[entityId] : null;
-      var ledRaw = (entity && entity.attributes) ? (entity.attributes.led_raw_state || "") : "";
-
+      var ent = this._entity("binary_sensor", name);
+      var ledRaw = (ent && ent.attributes) ? (ent.attributes.led_raw_state || "") : "";
       if (raw === "on" || ledRaw === "flash") {
-        var colour = LED_COLOURS[name] || "green";
-        img.src = IMG_BASE + "/led_" + colour + ".png";
-        if (ledRaw === "flash") {
-          img.classList.add("flash");
-        } else {
-          img.classList.remove("flash");
-        }
+        img.src = IMG_BASE + "/led_" + (LED_COLOURS[name]||"green") + ".png";
+        img.classList.toggle("flash", ledRaw === "flash");
       } else {
         img.src = IMG_BASE + "/led_off.png";
         img.classList.remove("flash");
@@ -380,8 +287,182 @@ class KaeserSC2Card extends HTMLElement {
   }
 }
 
-/* ── Registration ──────────────────────────────────────────── */
+
+/* ╔═══════════════════════════════════════════════════════════════╗
+ * ║                   VISUAL CONFIG EDITOR                       ║
+ * ╚═══════════════════════════════════════════════════════════════╝ */
+class KaeserSC2CardEditor extends HTMLElement {
+
+  set hass(hass) { this._hass = hass; }
+
+  setConfig(config) {
+    this._config = Object.assign({}, config);
+    this._render();
+  }
+
+  /* ── fire config-changed ── */
+  _fire() {
+    var ev = new CustomEvent("config-changed", {
+      detail: { config: Object.assign({}, this._config) },
+      bubbles: true, composed: true,
+    });
+    this.dispatchEvent(ev);
+  }
+
+  /* ── build editor UI ── */
+  _render() {
+    this.innerHTML = "";
+
+    var root = document.createElement("div");
+    root.style.cssText = "padding:16px; font-family:'Segoe UI',Arial,sans-serif; font-size:14px; color:var(--primary-text-color,#333);";
+
+    /* ── Section: General ── */
+    root.appendChild(this._heading("General"));
+    root.appendChild(this._textField("title", "Card Title", "Kaeser SC2"));
+    root.appendChild(this._textField("entity_prefix", "Entity Prefix", "shop_air_compressor",
+      "The prefix used for all entities (e.g. if your sensor is sensor.my_comp_pressure, enter my_comp)"));
+
+    /* ── Section: Status Bar ── */
+    root.appendChild(this._heading("Status Bar Position & Size"));
+    root.appendChild(this._row([
+      this._numField("sb_left","Left",DEFAULTS.sb_left),
+      this._numField("sb_top","Top",DEFAULTS.sb_top),
+      this._numField("sb_width","Width",DEFAULTS.sb_width),
+      this._numField("sb_height","Height",DEFAULTS.sb_height),
+    ]));
+    root.appendChild(this._row([
+      this._numField("sb_font","Font Size (px)",DEFAULTS.sb_font),
+    ]));
+
+    /* ── Section: LCD Content ── */
+    root.appendChild(this._heading("LCD Content Position & Size"));
+    root.appendChild(this._row([
+      this._numField("lcd_left","Left",DEFAULTS.lcd_left),
+      this._numField("lcd_top","Top",DEFAULTS.lcd_top),
+      this._numField("lcd_width","Width",DEFAULTS.lcd_width),
+      this._numField("lcd_height","Height",DEFAULTS.lcd_height),
+    ]));
+    root.appendChild(this._row([
+      this._numField("lcd_font","Font Size (px)",DEFAULTS.lcd_font),
+    ]));
+
+    /* ── Section: LED Size ── */
+    root.appendChild(this._heading("LED Indicators"));
+    root.appendChild(this._row([
+      this._numField("led_size","LED Size (px)",DEFAULTS.led_size),
+    ]));
+
+    /* ── Section: Individual LED Positions ── */
+    root.appendChild(this._heading("LED Positions (px in 750×493 image)"));
+    for (var i = 0; i < LED_NAMES.length; i++) {
+      var name = LED_NAMES[i];
+      var label = LED_LABELS[name] || name;
+      root.appendChild(this._row([
+        this._labelEl(label),
+        this._numField(name + "_x", "X", DEFAULTS[name + "_x"]),
+        this._numField(name + "_y", "Y", DEFAULTS[name + "_y"]),
+      ]));
+    }
+
+    /* ── Hint ── */
+    var hint = document.createElement("div");
+    hint.style.cssText = "margin-top:16px; padding:10px; background:var(--secondary-background-color,#f5f5f5); border-radius:8px; font-size:12px; line-height:1.5; color:var(--secondary-text-color,#666);";
+    hint.innerHTML = "<b>Position guide:</b> All coordinates are in pixels within the 750×493 SC2 background image. "
+      + "The card scales proportionally to fit the dashboard column width. "
+      + "Adjust values in small increments (5–10px) and the card preview will update live.";
+    root.appendChild(hint);
+
+    this.appendChild(root);
+  }
+
+  /* ── UI builder helpers ── */
+  _heading(text) {
+    var h = document.createElement("div");
+    h.textContent = text;
+    h.style.cssText = "font-weight:700; font-size:15px; margin:18px 0 8px 0; padding-bottom:4px; border-bottom:1px solid var(--divider-color,#ddd);";
+    return h;
+  }
+
+  _row(children) {
+    var r = document.createElement("div");
+    r.style.cssText = "display:flex; gap:10px; margin-bottom:8px; align-items:flex-end; flex-wrap:wrap;";
+    for (var i = 0; i < children.length; i++) r.appendChild(children[i]);
+    return r;
+  }
+
+  _labelEl(text) {
+    var d = document.createElement("div");
+    d.textContent = text;
+    d.style.cssText = "min-width:90px; font-size:13px; padding-bottom:6px;";
+    return d;
+  }
+
+  _textField(key, label, placeholder, helpText) {
+    var self = this;
+    var wrap = document.createElement("div");
+    wrap.style.cssText = "margin-bottom:10px;";
+
+    var lbl = document.createElement("label");
+    lbl.textContent = label;
+    lbl.style.cssText = "display:block; font-size:12px; font-weight:600; margin-bottom:4px; color:var(--primary-text-color,#333);";
+    wrap.appendChild(lbl);
+
+    var inp = document.createElement("input");
+    inp.type = "text";
+    inp.value = this._config[key] || "";
+    inp.placeholder = placeholder || "";
+    inp.style.cssText = "width:100%; max-width:400px; padding:8px 10px; border:1px solid var(--divider-color,#ccc); border-radius:6px; font-size:14px; background:var(--card-background-color,#fff); color:var(--primary-text-color,#333); box-sizing:border-box;";
+    inp.addEventListener("input", function() {
+      self._config[key] = this.value;
+      self._fire();
+    });
+    wrap.appendChild(inp);
+
+    if (helpText) {
+      var ht = document.createElement("div");
+      ht.textContent = helpText;
+      ht.style.cssText = "font-size:11px; color:var(--secondary-text-color,#888); margin-top:3px;";
+      wrap.appendChild(ht);
+    }
+    return wrap;
+  }
+
+  _numField(key, label, defaultVal) {
+    var self = this;
+    var wrap = document.createElement("div");
+    wrap.style.cssText = "display:flex; flex-direction:column; min-width:70px; max-width:100px;";
+
+    var lbl = document.createElement("label");
+    lbl.textContent = label;
+    lbl.style.cssText = "font-size:11px; font-weight:600; margin-bottom:3px; color:var(--secondary-text-color,#666);";
+    wrap.appendChild(lbl);
+
+    var inp = document.createElement("input");
+    inp.type = "number";
+    inp.step = "1";
+    var current = this._config[key];
+    inp.value = (current !== undefined && current !== null && current !== "") ? current : "";
+    inp.placeholder = String(defaultVal);
+    inp.style.cssText = "width:100%; padding:6px 8px; border:1px solid var(--divider-color,#ccc); border-radius:6px; font-size:13px; background:var(--card-background-color,#fff); color:var(--primary-text-color,#333); box-sizing:border-box;";
+    inp.addEventListener("input", function() {
+      if (this.value === "" || this.value === String(defaultVal)) {
+        delete self._config[key];
+      } else {
+        self._config[key] = Number(this.value);
+      }
+      self._fire();
+    });
+    wrap.appendChild(inp);
+    return wrap;
+  }
+}
+
+
+/* ╔═══════════════════════════════════════════════════════════════╗
+ * ║                     REGISTRATION                             ║
+ * ╚═══════════════════════════════════════════════════════════════╝ */
 customElements.define("kaeser-sc2-card", KaeserSC2Card);
+customElements.define("kaeser-sc2-card-editor", KaeserSC2CardEditor);
 
 window.customCards = window.customCards || [];
 window.customCards.push({
