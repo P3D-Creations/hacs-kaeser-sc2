@@ -36,12 +36,16 @@ from .const import (
     SER_ID_HMI_GET_LED_STATUS,
     TYPE_COUNTER,
     TYPE_ENUM,
+    TYPE_LINE,
+    TYPE_MENU,
     TYPE_PRESSURE,
+    TYPE_START_MENU,
     TYPE_START_PAGE,
     TYPE_TEMPERATURE,
     TYPE_TEXT_DISPLAY,
     TYPE_TEXT_FRAME,
     TYPE_TIME,
+    TYPE_TIMER,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -260,6 +264,11 @@ class SigmaControl2:
             return None
 
         resp_code = resp.get("2")
+        _LOGGER.debug(
+            "API response app=%s svc=%s code=%s data_type=%s",
+            app_id, service_id, resp_code,
+            type(resp.get("3")).__name__ if resp.get("3") is not None else "None",
+        )
         if resp_code != RESP_SUCCESS:
             if resp_code == RESP_APP_LOGOUT:
                 _LOGGER.info("Session expired on %s, re-authenticating", self.host)
@@ -308,14 +317,39 @@ class SigmaControl2:
     # ------------------------------------------------------------------
     # Menu parsing helpers
     # ------------------------------------------------------------------
+    def _iter_numeric_dict(self, obj: Any) -> list:
+        """Iterate an array-like dict with numeric keys {"0": ..., "1": ...}."""
+        items: list = []
+        if isinstance(obj, list):
+            return obj
+        if isinstance(obj, dict):
+            c = 0
+            while True:
+                v = obj.get(str(c))
+                if v is None:
+                    v = obj.get(c)
+                if v is None:
+                    break
+                items.append(v)
+                c += 1
+        return items
+
     def _find_start_page(self, obj: Any) -> dict | None:
+        """Find the TYPE_START_PAGE object in the flat menu array."""
         if isinstance(obj, dict):
             if obj.get("Type") == TYPE_START_PAGE:
                 return obj
-            for v in obj.values():
-                result = self._find_start_page(v)
+            # Iterate numeric-keyed flat array
+            for item in self._iter_numeric_dict(obj):
+                result = self._find_start_page(item)
                 if result:
                     return result
+            # Also check named values
+            for v in obj.values():
+                if isinstance(v, (dict, list)):
+                    result = self._find_start_page(v)
+                    if result:
+                        return result
         elif isinstance(obj, list):
             for item in obj:
                 result = self._find_start_page(item)
@@ -323,46 +357,73 @@ class SigmaControl2:
                     return result
         return None
 
-    def _extract_object_ids(self, menu_obj: dict) -> list[int]:
-        ids: list[int] = []
-        status_line = menu_obj.get("StatusLine")
-        if status_line:
-            ids.extend(self._ids_from_line(status_line))
-        objects = menu_obj.get("Object", {})
-        counter = 0
-        while True:
-            line = (
-                objects.get(str(counter))
-                if isinstance(objects, dict)
-                else None
-            )
-            if line is None:
-                line = (
-                    objects.get(counter)
-                    if isinstance(objects, dict)
-                    else None
-                )
-            if line is None:
-                break
-            ids.extend(self._ids_from_line(line))
-            counter += 1
-        return ids
+    def _build_id_index(self, menu: Any) -> dict[int, dict]:
+        """Build a lookup of Id → menu object for the flat menu array."""
+        index: dict[int, dict] = {}
+        items = self._iter_numeric_dict(menu) if isinstance(menu, (dict, list)) else []
+        for item in items:
+            if isinstance(item, dict) and item.get("Id") is not None:
+                index[item["Id"]] = item
+        return index
 
-    def _ids_from_line(self, line: dict) -> list[int]:
+    def _extract_object_ids(self, start_page: dict, id_index: dict[int, dict]) -> list[int]:
+        """
+        Extract all leaf HMI object IDs from the start page and its children.
+
+        The start page has:
+        - StatusLine: int ID or dict (references a TYPE_LINE)
+        - Object: {"0": id_or_dict, "1": id_or_dict, ...} (lines on the page)
+
+        Each TYPE_LINE has:
+        - Object: {"0": id_or_dict, ...} (actual IO objects like pressure, temp)
+        """
         ids: list[int] = []
-        if not isinstance(line, dict):
-            return ids
-        obj_id = line.get("Id")
-        if obj_id is not None:
-            ids.append(obj_id)
-        counter = 0
-        while True:
-            sub = line.get(str(counter)) or line.get(counter)
-            if sub is None:
-                break
-            if isinstance(sub, dict) and sub.get("Id"):
-                ids.append(sub["Id"])
-            counter += 1
+        collected: set[int] = set()
+
+        def _collect_from(ref: Any) -> None:
+            """Recursively collect object IDs from a reference."""
+            if ref is None:
+                return
+            if isinstance(ref, int):
+                # This is an ID referencing another object in the menu
+                if ref in id_index:
+                    obj = id_index[ref]
+                    _collect_from_obj(obj)
+                else:
+                    # It's a leaf object ID — add it
+                    if ref not in collected:
+                        collected.add(ref)
+                        ids.append(ref)
+            elif isinstance(ref, dict):
+                _collect_from_obj(ref)
+
+        def _collect_from_obj(obj: dict) -> None:
+            obj_type = obj.get("Type")
+            obj_id = obj.get("Id")
+
+            # If it's a container (start_page, line, menu), recurse into children
+            if obj_type in (TYPE_START_PAGE, TYPE_LINE, TYPE_START_MENU, TYPE_MENU):
+                # Collect StatusLine
+                sl = obj.get("StatusLine")
+                if sl is not None:
+                    _collect_from(sl)
+                # Collect Object children
+                sub_objects = obj.get("Object")
+                if sub_objects is not None:
+                    for child in self._iter_numeric_dict(sub_objects):
+                        _collect_from(child)
+                    # Also try named keys
+                    if isinstance(sub_objects, dict):
+                        for v in sub_objects.values():
+                            if isinstance(v, (int, dict)):
+                                _collect_from(v)
+            else:
+                # It's a leaf object (pressure, temp, etc.) — add its ID
+                if obj_id is not None and obj_id not in collected:
+                    collected.add(obj_id)
+                    ids.append(obj_id)
+
+        _collect_from_obj(start_page)
         return ids
 
     # ------------------------------------------------------------------
@@ -370,10 +431,19 @@ class SigmaControl2:
     # ------------------------------------------------------------------
     @staticmethod
     def _value_text(obj: dict) -> str:
-        for key in ("ValueText", "Value", "Text"):
+        """Get the display value text from an HMI object."""
+        for key in ("Value", "ValueText", "Text"):
             v = obj.get(key)
             if v is not None:
                 return str(v).strip()
+        return ""
+
+    @staticmethod
+    def _unit_text(obj: dict) -> str:
+        """Get the unit string from an HMI object (separate field)."""
+        u = obj.get("Unit")
+        if u is not None:
+            return str(u).strip()
         return ""
 
     @staticmethod
@@ -407,35 +477,54 @@ class SigmaControl2:
 
         # Menu discovery (once)
         if self._menu_tree is None:
-            await self.get_menu_structure()
+            menu = await self.get_menu_structure()
+            _LOGGER.debug("Menu structure from %s: %s", self.host, menu)
 
         # Object IDs
         if not self._object_ids and self._menu_tree:
             sp = self._find_start_page(self._menu_tree)
             if sp:
-                self._object_ids = self._extract_object_ids(sp)
+                _LOGGER.debug("Start page from %s: %s", self.host, sp)
+                id_index = self._build_id_index(self._menu_tree)
+                _LOGGER.debug("Menu ID index has %d entries", len(id_index))
+                self._object_ids = self._extract_object_ids(sp, id_index)
                 _LOGGER.debug(
-                    "Discovered %d HMI object IDs from %s",
+                    "Discovered %d HMI object IDs from %s: %s",
                     len(self._object_ids),
                     self.host,
+                    self._object_ids,
                 )
+            else:
+                _LOGGER.warning("No start page found in menu from %s", self.host)
 
         # HMI objects
         if self._object_ids:
             hmi = await self.get_hmi_objects(self._object_ids)
+            _LOGGER.debug("HMI objects from %s: %s", self.host, hmi)
             if hmi:
                 self._parse_hmi(data, hmi)
+        else:
+            _LOGGER.warning("No HMI object IDs to fetch from %s", self.host)
 
         # LEDs
         led = await self.get_led_status()
+        _LOGGER.debug("LED status from %s: %s", self.host, led)
         if led:
             self._parse_leds(data, led)
 
         # Compressor name/info
         info = await self.get_compressor_info()
+        _LOGGER.debug("Compressor info from %s: %s", self.host, info)
         if info:
-            name = info.get("Name") or info.get("0")
-            if name:
+            comp_type = info.get("CompType") or ""
+            comp_seq = info.get("CompSeqNum") or ""
+            pn = info.get("PN") or ""
+            name = info.get("Name") or ""
+            if comp_type:
+                data.name = f"SC2 {comp_seq}-{comp_type}" if comp_seq else comp_type
+            elif pn:
+                data.name = pn
+            elif name:
                 data.name = str(name)
 
         # I/O
@@ -452,43 +541,67 @@ class SigmaControl2:
             pass
 
         data.online = True
+        _LOGGER.debug(
+            "Poll result from %s: pressure=%s %s, temp=%s %s, state=%s, "
+            "run_hours=%s, maintenance_in=%s, key=%s, pa=%s, time=%s",
+            self.host,
+            data.pressure, data.pressure_unit,
+            data.temperature, data.temperature_unit,
+            data.state,
+            data.run_hours, data.maintenance_in,
+            data.key_switch, data.pa_status,
+            data.controller_time,
+        )
         return data
 
     # ------------------------------------------------------------------
     # Parsers
     # ------------------------------------------------------------------
     def _parse_hmi(self, data: CompressorData, objects: Any) -> None:
-        obj_list: list[dict] = []
-        if isinstance(objects, list):
-            obj_list = objects
-        elif isinstance(objects, dict):
-            c = 0
-            while True:
-                o = objects.get(str(c)) or objects.get(c)
-                if o is None:
-                    break
-                obj_list.append(o)
-                c += 1
+        """Parse HMI object response into CompressorData fields."""
+        obj_list: list[dict] = self._iter_numeric_dict(objects)
+        if not obj_list and isinstance(objects, dict):
+            # Maybe it's a single object or has non-numeric keys
+            obj_list = [
+                v for v in objects.values() if isinstance(v, dict)
+            ]
+
+        _LOGGER.debug("Parsing %d HMI objects", len(obj_list))
 
         for obj in obj_list:
             if not isinstance(obj, dict):
                 continue
             ot = obj.get("Type")
             vt = self._value_text(obj)
+            unit = self._unit_text(obj)
+
+            _LOGGER.debug(
+                "HMI obj Id=%s Type=%s Value='%s' Unit='%s'",
+                obj.get("Id"), ot, vt, unit,
+            )
 
             if ot == TYPE_PRESSURE:
                 v = self._parse_numeric(vt)
                 if v is not None:
                     data.pressure = v
-                    um = re.search(r"\d\s*(psi|bar|kPa|MPa)", vt, re.I)
-                    if um:
-                        data.pressure_unit = um.group(1)
+                    if unit:
+                        data.pressure_unit = unit
+                    else:
+                        # Fallback: try to extract unit from value text
+                        um = re.search(r"(psi|bar|kPa|MPa)", vt, re.I)
+                        if um:
+                            data.pressure_unit = um.group(1)
 
             elif ot == TYPE_TEMPERATURE:
                 v = self._parse_numeric(vt)
                 if v is not None:
                     data.temperature = v
-                    data.temperature_unit = "°C" if "C" in vt.upper() and "°" in vt else "°F"
+                    if unit:
+                        data.temperature_unit = unit
+                    elif "C" in vt.upper() and "°" in vt:
+                        data.temperature_unit = "°C"
+                    else:
+                        data.temperature_unit = "°F"
 
             elif ot == TYPE_TIME:
                 data.controller_time = vt
@@ -496,6 +609,8 @@ class SigmaControl2:
             elif ot == TYPE_COUNTER:
                 v = self._parse_numeric(vt)
                 if v is not None:
+                    low_unit = unit.lower() if unit else ""
+                    low_vt = vt.lower()
                     if data.run_hours is None:
                         data.run_hours = int(v)
                     elif data.maintenance_in is None:
@@ -512,6 +627,11 @@ class SigmaControl2:
 
             elif ot == TYPE_TEXT_FRAME:
                 self._parse_text_frame(data, vt)
+
+            elif ot == TYPE_TIMER:
+                # TYPE_TIMER (10) — could be controller time
+                if not data.controller_time:
+                    data.controller_time = vt
 
     def _parse_text_frame(self, data: CompressorData, text: str) -> None:
         low = text.lower().strip()
@@ -537,6 +657,7 @@ class SigmaControl2:
                 break
 
     def _parse_leds(self, data: CompressorData, led_data: dict) -> None:
+        _LOGGER.debug("LED raw keys: %s", list(led_data.keys()) if isinstance(led_data, dict) else type(led_data))
         mapping = {
             "led_error": "led_error",
             "led_com_error": "led_com_error",
@@ -556,18 +677,29 @@ class SigmaControl2:
             data.led_voltage = "on"
 
     def _parse_reports(self, data: CompressorData, reports: Any) -> None:
+        """Parse report objects into active_messages."""
         msgs: list[dict] = []
-        if isinstance(reports, dict):
-            rd = reports.get("3") or reports.get(3)
-            if isinstance(rd, list):
-                for entry in rd:
-                    if isinstance(entry, dict):
-                        msgs.append({
-                            "date": entry.get("Date", ""),
-                            "time": entry.get("Time", ""),
-                            "state": entry.get("State", ""),
-                            "message": entry.get("Message", ""),
-                            "type": entry.get("Type", ""),
-                            "id": entry.get("Id", ""),
-                        })
+        # _api_call already extracted resp["3"], so reports IS the data payload
+        report_list: list = []
+        if isinstance(reports, list):
+            report_list = reports
+        elif isinstance(reports, dict):
+            # Try numeric-keyed iteration
+            report_list = self._iter_numeric_dict(reports)
+            if not report_list:
+                # Maybe the data is nested one more level
+                rd = reports.get("3") or reports.get(3)
+                if isinstance(rd, list):
+                    report_list = rd
+
+        for entry in report_list:
+            if isinstance(entry, dict):
+                msgs.append({
+                    "date": entry.get("Date", ""),
+                    "time": entry.get("Time", ""),
+                    "state": entry.get("State", ""),
+                    "message": entry.get("Message", ""),
+                    "type": entry.get("Type", ""),
+                    "id": entry.get("Id", ""),
+                })
         data.active_messages = msgs
