@@ -9,12 +9,14 @@ Protocol reverse-engineered from the controller's JavaScript frontend.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import re
 from dataclasses import dataclass, field
 from http.cookies import SimpleCookie
 from typing import Any
+from urllib.parse import urlparse
 
 import aiohttp
 
@@ -208,6 +210,32 @@ class SigmaControl2:
 
     async def test_connection(self) -> bool:
         """Quick connectivity + auth test (used by config flow)."""
+        # First, do a raw TCP check to give a better diagnostic
+        try:
+            parsed = urlparse(self.host)
+            host = parsed.hostname or self.host.replace("http://", "").replace("https://", "").split(":")[0]
+            port = parsed.port or 80
+            _LOGGER.debug("TCP reachability check for %s:%s", host, port)
+            _, writer = await asyncio.wait_for(
+                asyncio.open_connection(host, port), timeout=10
+            )
+            writer.close()
+            await writer.wait_closed()
+            _LOGGER.debug("TCP reachability OK for %s:%s", host, port)
+        except asyncio.TimeoutError:
+            _LOGGER.error(
+                "TCP connection to %s port %s timed out (10s). "
+                "Is the controller powered on and the web interface enabled?",
+                host, port,
+            )
+            return False
+        except OSError as exc:
+            _LOGGER.error(
+                "TCP connection to %s port %s failed: [%s] %s",
+                host, port, type(exc).__name__, exc,
+            )
+            return False
+
         try:
             ok = await self.authenticate()
             if not ok:

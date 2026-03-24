@@ -1,6 +1,6 @@
 {
   "domain": "kaeser_sc2",
-  "name": "Kaeser Sigma Control 2",
+  "name": "Kaeser Compressors",
   "codeowners": [],
   "config_flow": true,
   "documentation": "https://github.com/P3D-Creations/hacs-kaeser-sc2",
@@ -10,5 +10,5 @@
   "requirements": [
     "aiohttp>=3.8"
   ],
-  "version": "0.1.9"
+  "version": "0.2.0"
 }

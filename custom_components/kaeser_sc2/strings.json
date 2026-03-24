@@ -2,7 +2,7 @@
     "config": {
         "step": {
             "user": {
-                "title": "Add Kaeser Compressor",
+                "title": "Add Kaeser Compressor (Sigma Control 2)",
                 "description": "Enter the IP address and login credentials for your Kaeser Sigma Control 2 controller.",
                 "data": {
                     "name": "Device name",
@@ -25,7 +25,7 @@
     "options": {
         "step": {
             "init": {
-                "title": "Kaeser SC2 Options",
+                "title": "Kaeser Compressor Options",
                 "description": "Adjust integration settings for this compressor.",
                 "data": {
                     "poll_interval": "Poll interval (seconds)"
