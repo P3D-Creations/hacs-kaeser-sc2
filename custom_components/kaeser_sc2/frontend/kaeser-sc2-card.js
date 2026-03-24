@@ -1,9 +1,11 @@
 /**
- * Kaeser Sigma Control 2 — Custom Lovelace Card  v3.2.0
+ * Kaeser Sigma Control 2 — Custom Lovelace Card  v4.0.0
  *
  * Pixel-accurate replica of the SC2 controller front panel.
- *  - Visual config editor for entity assignment & layout tuning
- *  - Hides load-hours line when sensor is unavailable
+ *  - Device picker dropdown in editor (auto-discovers Kaeser entities)
+ *  - Editor uses change events to prevent focus loss on keypress
+ *  - LED positions hardcoded from real hardware calibration
+ *  - Pressure displayed as integer (no decimals, max 3 digits)
  *  - Wrapped in IIFE to prevent global scope collisions
  */
 (function () {
@@ -12,27 +14,31 @@
   /* Guard against double-registration */
   if (customElements.get("kaeser-sc2-card")) return;
 
-  var CARD_VERSION = "3.2.0";
+  var CARD_VERSION = "4.0.0";
   var IMG_BASE = "/kaeser_sc2/images";
 
   /* ═══════════════════════════════════════════════════════════════
-   * Default layout constants (all in px at 750×493 native)
+   * Layout constants (px at 750×493 native)
    * ═══════════════════════════════════════════════════════════════ */
   var DEFAULTS = {
     sb_left: 198,  sb_top: 88,  sb_width: 345, sb_height: 20,
     sb_font: 16,
     lcd_left: 198, lcd_top: 110, lcd_width: 345, lcd_height: 155,
-    lcd_font: 16,
-    led_size: 13,
-    led_error_x: 43,       led_error_y: 44,
-    led_com_error_x: 43,   led_com_error_y: 107,
-    led_maintenance_x: 43, led_maintenance_y: 169,
-    led_voltage_x: 43,     led_voltage_y: 256,
-    led_load_x: 43,        led_load_y: 388,
-    led_idle_x: 43,        led_idle_y: 424,
-    led_remote_x: 225,     led_remote_y: 389,
-    led_clock_x: 300,      led_clock_y: 389,
-    led_power_on_x: 643,   led_power_on_y: 321
+    lcd_font: 16
+  };
+
+  /* LED positions — calibrated to real hardware, not configurable */
+  var LED_SIZE = 13;
+  var LED_POS = {
+    led_error:       { x: 43,  y: 44  },
+    led_com_error:   { x: 43,  y: 107 },
+    led_maintenance: { x: 43,  y: 165 },
+    led_voltage:     { x: 43,  y: 250 },
+    led_load:        { x: 43,  y: 378 },
+    led_idle:        { x: 43,  y: 412 },
+    led_remote:      { x: 225, y: 376 },
+    led_clock:       { x: 300, y: 376 },
+    led_power_on:    { x: 643, y: 311 }
   };
 
   var SC2_W = 750;
@@ -46,11 +52,6 @@
     led_error:"red", led_com_error:"red", led_maintenance:"orange",
     led_voltage:"green", led_load:"green", led_idle:"green",
     led_remote:"green", led_clock:"green", led_power_on:"green"
-  };
-  var LED_LABELS = {
-    led_error:"Error", led_com_error:"Comm Error", led_maintenance:"Maintenance",
-    led_voltage:"Voltage", led_load:"Load", led_idle:"Idle",
-    led_remote:"Remote", led_clock:"Clock", led_power_on:"Power On"
   };
 
   /* helpers */
@@ -67,6 +68,11 @@
   }
   function _hVal(val) {
     return (!val || val === "\u2014" || val === "unknown" || val === "unavailable") ? "" : val + "h";
+  }
+  function _intPressure(val) {
+    if (!_clean(val)) return "";
+    var n = parseFloat(val);
+    return isNaN(n) ? val : String(Math.round(n));
   }
 
   /* ╔═══════════════════════════════════════════════════════════════╗
@@ -142,7 +148,6 @@
 
       var sb_l = _v(c,"sb_left"),  sb_t = _v(c,"sb_top"),  sb_w = _v(c,"sb_width"),  sb_h = _v(c,"sb_height"), sb_f = _v(c,"sb_font");
       var lcd_l= _v(c,"lcd_left"), lcd_t= _v(c,"lcd_top"), lcd_w= _v(c,"lcd_width"), lcd_h= _v(c,"lcd_height"),lcd_f= _v(c,"lcd_font");
-      var led_sz = _v(c,"led_size");
 
       var style = document.createElement("style");
       style.textContent =
@@ -158,7 +163,7 @@
         ".ln{position:relative;box-sizing:border-box}" +
         ".ln span{position:absolute;top:0;height:100%;display:flex;align-items:center;font:normal " + lcd_f + "px/1 'Courier New','Arial Unicode MS',monospace;color:#454545;white-space:nowrap;overflow:hidden}" +
         ".sb span,.ln span{font-size:clamp(6px,2.13vw," + Math.max(sb_f,lcd_f) + "px)}" +
-        ".led{position:absolute;width:" + _pctX(led_sz) + ";height:" + _pctY(led_sz) + "}" +
+        ".led{position:absolute;width:" + _pctX(LED_SIZE) + ";height:" + _pctY(LED_SIZE) + "}" +
         ".led.flash{animation:blink .6s infinite}" +
         "@keyframes blink{0%,100%{opacity:1}50%{opacity:.12}}" +
         ".ft{padding:4px 14px;font:400 10px/1.4 'Segoe UI',Arial,sans-serif;color:#636e72;text-align:right}";
@@ -176,13 +181,16 @@
       var panel = document.createElement("div"); panel.className = "panel";
       var inner = document.createElement("div"); inner.className = "inner";
 
-      /* Status bar */
+      /* Status bar — pressure (left) | clock (center) | temperature (right) */
       var sb = document.createElement("div"); sb.className = "sb";
       var sbW = sb_w;
       function sp(left, width, id, align) {
         return "<span id='" + id + "' style='left:" + (left/sbW*100).toFixed(2) + "%;width:" + (width/sbW*100).toFixed(2) + "%;justify-content:" + (align||"flex-end") + "'></span>";
       }
-      sb.innerHTML = sp(0,80,"sb-p") + sp(120,70,"sb-t") + sp(250,95,"sb-d");
+      sb.innerHTML =
+        sp(4, 115, "sb-p", "flex-start") +
+        sp(120, 100, "sb-t", "center") +
+        sp(245, 100, "sb-d", "flex-end");
       inner.appendChild(sb);
 
       /* LCD content — 8 lines */
@@ -198,13 +206,15 @@
 
       var lines = [
         sep,
-        lp(0, lW, "lcd-st", "flex-start"),
+        lp(5, lW - 5, "lcd-st", "flex-start"),
         sep,
-        lp(0,70,null,null,"Key") + lp(80,10,null,null,"-") + lp(100,40,"lcd-key") + lp(150,10,null,null,"\u00a6") + lp(160,20,null,"flex-end","pA") + lp(190,10,null,null,"-") + lp(210,135,"lcd-pa"),
+        lp(5,60,null,null,"Key") + lp(65,15,null,null,"-") + lp(80,55,"lcd-key","flex-start") +
+          lp(140,10,null,null,"\u00a6") +
+          lp(155,25,null,"flex-start","pA") + lp(180,15,null,null,"-") + lp(200,140,"lcd-pa","flex-start"),
         sep,
         lp(160,60,null,null,"Run") + lp(230,115,"lcd-run","flex-end"),
         lp(160,60,null,null,"Load") + lp(230,115,"lcd-load","flex-end"),
-        lp(0,220,null,null,"Maintenance in") + lp(230,115,"lcd-mt","flex-end")
+        lp(5,220,null,null,"Maintenance in") + lp(230,115,"lcd-mt","flex-end")
       ];
       var lineH = (100 / lines.length).toFixed(3) + "%";
       for (var i = 0; i < lines.length; i++) {
@@ -216,17 +226,17 @@
       }
       inner.appendChild(lcd);
 
-      /* LEDs */
+      /* LEDs — hardcoded positions */
       for (var li = 0; li < LED_NAMES.length; li++) {
         var name = LED_NAMES[li];
-        var lx = _v(c, name + "_x");
-        var ly = _v(c, name + "_y");
+        var pos = LED_POS[name];
+        if (!pos) continue;
         var img = document.createElement("img");
         img.className = "led";
         img.id = "led-" + name;
         img.src = IMG_BASE + "/led_off.png";
-        img.style.left = _pctX(lx);
-        img.style.top  = _pctY(ly);
+        img.style.left = _pctX(pos.x);
+        img.style.top  = _pctY(pos.y);
         inner.appendChild(img);
       }
 
@@ -249,12 +259,15 @@
       var self = this;
       function $(id) { return self.shadowRoot.getElementById(id); }
 
+      /* Pressure — integer, no decimals, max 3 digits */
       var p  = this._state("pressure"), pU = this._unit("pressure") || "psi";
+      var pFmt = _intPressure(p);
+
       var t  = this._state("temperature"), tU = this._unit("temperature") || "\u00b0F";
       var tm = this._state("controller_time");
 
       var sbP = $("sb-p"), sbT = $("sb-t"), sbD = $("sb-d");
-      if (sbP) sbP.textContent = _clean(p)  ? p + pU : "";
+      if (sbP) sbP.textContent = pFmt ? pFmt + " " + pU : "";
       if (sbT) sbT.textContent = _clean(tm) || "";
       if (sbD) sbD.textContent = _clean(t)  ? t + tU : "";
 
@@ -291,75 +304,207 @@
    * ╚═══════════════════════════════════════════════════════════════╝ */
   class KaeserSC2CardEditor extends HTMLElement {
 
-    set hass(hass) { this._hass = hass; }
+    constructor() {
+      super();
+      this._config = {};
+      this._hass = null;
+      this._rendered = false;
+      this._internalChange = false;
+    }
+
+    set hass(hass) {
+      var hadHass = !!this._hass;
+      this._hass = hass;
+      /* First time we get hass — (re)render to populate device list */
+      if (!hadHass && this._config) {
+        this._render();
+        this._rendered = true;
+      }
+    }
 
     setConfig(config) {
       this._config = Object.assign({}, config);
+      /* Skip re-render when we triggered the change ourselves */
+      if (this._internalChange) {
+        this._internalChange = false;
+        return;
+      }
       this._render();
+      this._rendered = true;
     }
 
     _fire() {
+      this._internalChange = true;
       this.dispatchEvent(new CustomEvent("config-changed", {
         detail: { config: Object.assign({}, this._config) },
         bubbles: true, composed: true
       }));
     }
 
+    /* ── Auto-discover Kaeser devices from hass.states ── */
+    _findKaeserDevices() {
+      var devices = {};
+      if (!this._hass || !this._hass.states) return [];
+      var suffixes = ["_pressure", "_temperature", "_state", "_run_hours", "_controller_time"];
+      var labelSuffixes = [" Pressure", " Temperature", " State", " Run Hours", " Controller Time"];
+
+      for (var entityId in this._hass.states) {
+        if (!entityId.startsWith("sensor.")) continue;
+        var name = entityId.substring(7); /* strip "sensor." */
+        for (var i = 0; i < suffixes.length; i++) {
+          if (name.endsWith(suffixes[i])) {
+            var prefix = name.substring(0, name.length - suffixes[i].length);
+            if (!devices[prefix]) devices[prefix] = { count: 0, friendlyName: "" };
+            devices[prefix].count++;
+            /* Extract friendly device name from entity attributes */
+            if (!devices[prefix].friendlyName) {
+              var ent = this._hass.states[entityId];
+              if (ent && ent.attributes && ent.attributes.friendly_name) {
+                var fn = ent.attributes.friendly_name;
+                for (var j = 0; j < labelSuffixes.length; j++) {
+                  if (fn.endsWith(labelSuffixes[j])) {
+                    devices[prefix].friendlyName = fn.substring(0, fn.length - labelSuffixes[j].length);
+                    break;
+                  }
+                }
+              }
+            }
+            break;
+          }
+        }
+      }
+
+      /* Keep only prefixes that match at least 3 of our known suffixes */
+      var result = [];
+      for (var p in devices) {
+        if (devices[p].count >= 3) {
+          result.push({
+            prefix: p,
+            name: devices[p].friendlyName || p.replace(/_/g, " ")
+          });
+        }
+      }
+      return result.sort(function(a, b) { return a.prefix.localeCompare(b.prefix); });
+    }
+
     _render() {
       this.innerHTML = "";
+      var self = this;
 
       var root = document.createElement("div");
       root.style.cssText = "padding:16px;font-family:'Segoe UI',Arial,sans-serif;font-size:14px;color:var(--primary-text-color,#333)";
 
+      /* ── General ─────────────────────────────────────────── */
       root.appendChild(this._heading("General"));
       root.appendChild(this._textField("title", "Card Title", "Kaeser SC2"));
-      root.appendChild(this._textField("entity_prefix", "Entity Prefix", "shop_air_compressor",
-        "The prefix used for all entities (e.g. if your sensor is sensor.my_comp_pressure, enter my_comp)"));
 
-      root.appendChild(this._heading("Status Bar Position & Size"));
-      root.appendChild(this._row([
+      /* ── Device Picker ───────────────────────────────────── */
+      var devWrap = document.createElement("div");
+      devWrap.style.cssText = "margin-bottom:12px";
+      var devLabel = document.createElement("label");
+      devLabel.textContent = "Compressor";
+      devLabel.style.cssText = "display:block;font-size:12px;font-weight:600;margin-bottom:4px;color:var(--primary-text-color,#333)";
+      devWrap.appendChild(devLabel);
+
+      var devices = this._findKaeserDevices();
+      var currentPrefix = this._config.entity_prefix || "";
+      var isCustom = true;
+
+      var select = document.createElement("select");
+      select.style.cssText = "width:100%;max-width:400px;padding:8px 10px;border:1px solid var(--divider-color,#ccc);border-radius:6px;font-size:14px;background:var(--card-background-color,#fff);color:var(--primary-text-color,#333);box-sizing:border-box";
+
+      var optBlank = document.createElement("option");
+      optBlank.value = "";
+      optBlank.textContent = "-- Select a compressor --";
+      select.appendChild(optBlank);
+
+      for (var i = 0; i < devices.length; i++) {
+        var opt = document.createElement("option");
+        opt.value = devices[i].prefix;
+        opt.textContent = devices[i].name + "  (" + devices[i].prefix + ")";
+        if (currentPrefix === devices[i].prefix) { opt.selected = true; isCustom = false; }
+        select.appendChild(opt);
+      }
+
+      var optCustom = document.createElement("option");
+      optCustom.value = "__custom__";
+      optCustom.textContent = "Custom prefix\u2026";
+      if (isCustom && currentPrefix) optCustom.selected = true;
+      select.appendChild(optCustom);
+
+      /* Manual prefix input — hidden unless "Custom" is chosen */
+      var manualInput = document.createElement("input");
+      manualInput.type = "text";
+      manualInput.value = (isCustom && currentPrefix) ? currentPrefix : "";
+      manualInput.placeholder = "my_compressor";
+      manualInput.style.cssText = "width:100%;max-width:400px;padding:8px 10px;border:1px solid var(--divider-color,#ccc);border-radius:6px;font-size:14px;background:var(--card-background-color,#fff);color:var(--primary-text-color,#333);box-sizing:border-box;margin-top:6px;display:" + ((isCustom && currentPrefix) ? "block" : "none");
+
+      select.addEventListener("change", function() {
+        if (this.value === "__custom__") {
+          manualInput.style.display = "block";
+          manualInput.focus();
+        } else {
+          manualInput.style.display = "none";
+          self._config.entity_prefix = this.value;
+          self._fire();
+        }
+      });
+
+      /* change event fires on blur — does NOT steal focus mid-typing */
+      manualInput.addEventListener("change", function() {
+        self._config.entity_prefix = this.value;
+        self._fire();
+      });
+
+      devWrap.appendChild(select);
+      devWrap.appendChild(manualInput);
+
+      var devHelp = document.createElement("div");
+      devHelp.textContent = "The prefix shared by all entities for this compressor (e.g. sensor.PREFIX_pressure).";
+      devHelp.style.cssText = "font-size:11px;color:var(--secondary-text-color,#888);margin-top:3px";
+      devWrap.appendChild(devHelp);
+      root.appendChild(devWrap);
+
+      /* ── Advanced layout (collapsible) ───────────────────── */
+      var details = document.createElement("details");
+      details.style.cssText = "margin-top:12px";
+      var summary = document.createElement("summary");
+      summary.textContent = "Advanced Layout";
+      summary.style.cssText = "cursor:pointer;font-weight:700;font-size:15px;padding-bottom:4px;border-bottom:1px solid var(--divider-color,#ddd);user-select:none";
+      details.appendChild(summary);
+
+      var advInner = document.createElement("div");
+      advInner.style.cssText = "padding-top:10px";
+
+      advInner.appendChild(this._subHeading("Status Bar Position & Size"));
+      advInner.appendChild(this._row([
         this._numField("sb_left","Left",DEFAULTS.sb_left),
         this._numField("sb_top","Top",DEFAULTS.sb_top),
         this._numField("sb_width","Width",DEFAULTS.sb_width),
         this._numField("sb_height","Height",DEFAULTS.sb_height)
       ]));
-      root.appendChild(this._row([
-        this._numField("sb_font","Font Size (px)",DEFAULTS.sb_font)
+      advInner.appendChild(this._row([
+        this._numField("sb_font","Font (px)",DEFAULTS.sb_font)
       ]));
 
-      root.appendChild(this._heading("LCD Content Position & Size"));
-      root.appendChild(this._row([
+      advInner.appendChild(this._subHeading("LCD Content Position & Size"));
+      advInner.appendChild(this._row([
         this._numField("lcd_left","Left",DEFAULTS.lcd_left),
         this._numField("lcd_top","Top",DEFAULTS.lcd_top),
         this._numField("lcd_width","Width",DEFAULTS.lcd_width),
         this._numField("lcd_height","Height",DEFAULTS.lcd_height)
       ]));
-      root.appendChild(this._row([
-        this._numField("lcd_font","Font Size (px)",DEFAULTS.lcd_font)
+      advInner.appendChild(this._row([
+        this._numField("lcd_font","Font (px)",DEFAULTS.lcd_font)
       ]));
-
-      root.appendChild(this._heading("LED Indicators"));
-      root.appendChild(this._row([
-        this._numField("led_size","LED Size (px)",DEFAULTS.led_size)
-      ]));
-
-      root.appendChild(this._heading("LED Positions (px in 750\u00d7493 image)"));
-      for (var i = 0; i < LED_NAMES.length; i++) {
-        var name = LED_NAMES[i];
-        var label = LED_LABELS[name] || name;
-        root.appendChild(this._row([
-          this._labelEl(label),
-          this._numField(name + "_x", "X", DEFAULTS[name + "_x"]),
-          this._numField(name + "_y", "Y", DEFAULTS[name + "_y"])
-        ]));
-      }
 
       var hint = document.createElement("div");
-      hint.style.cssText = "margin-top:16px;padding:10px;background:var(--secondary-background-color,#f5f5f5);border-radius:8px;font-size:12px;line-height:1.5;color:var(--secondary-text-color,#666)";
-      hint.innerHTML = "<b>Position guide:</b> All coordinates are in pixels within the 750\u00d7493 SC2 background image. " +
-        "The card scales proportionally to fit the dashboard column width. " +
-        "Adjust values in small increments (5\u201310px) and the card preview will update live.";
-      root.appendChild(hint);
+      hint.style.cssText = "margin-top:10px;padding:10px;background:var(--secondary-background-color,#f5f5f5);border-radius:8px;font-size:12px;line-height:1.5;color:var(--secondary-text-color,#666)";
+      hint.textContent = "All coordinates are in pixels within the 750\u00d7493 SC2 background image. The card scales proportionally to fit the dashboard column width.";
+      advInner.appendChild(hint);
+
+      details.appendChild(advInner);
+      root.appendChild(details);
 
       this.appendChild(root);
     }
@@ -371,6 +516,13 @@
       return h;
     }
 
+    _subHeading(text) {
+      var h = document.createElement("div");
+      h.textContent = text;
+      h.style.cssText = "font-weight:600;font-size:13px;margin:12px 0 6px 0;color:var(--secondary-text-color,#666)";
+      return h;
+    }
+
     _row(children) {
       var r = document.createElement("div");
       r.style.cssText = "display:flex;gap:10px;margin-bottom:8px;align-items:flex-end;flex-wrap:wrap";
@@ -378,14 +530,7 @@
       return r;
     }
 
-    _labelEl(text) {
-      var d = document.createElement("div");
-      d.textContent = text;
-      d.style.cssText = "min-width:90px;font-size:13px;padding-bottom:6px";
-      return d;
-    }
-
-    _textField(key, label, placeholder, helpText) {
+    _textField(key, label, placeholder) {
       var self = this;
       var wrap = document.createElement("div");
       wrap.style.cssText = "margin-bottom:10px";
@@ -400,18 +545,12 @@
       inp.value = this._config[key] || "";
       inp.placeholder = placeholder || "";
       inp.style.cssText = "width:100%;max-width:400px;padding:8px 10px;border:1px solid var(--divider-color,#ccc);border-radius:6px;font-size:14px;background:var(--card-background-color,#fff);color:var(--primary-text-color,#333);box-sizing:border-box";
-      inp.addEventListener("input", function() {
+      /* change fires on blur — preserves focus while typing */
+      inp.addEventListener("change", function() {
         self._config[key] = this.value;
         self._fire();
       });
       wrap.appendChild(inp);
-
-      if (helpText) {
-        var ht = document.createElement("div");
-        ht.textContent = helpText;
-        ht.style.cssText = "font-size:11px;color:var(--secondary-text-color,#888);margin-top:3px";
-        wrap.appendChild(ht);
-      }
       return wrap;
     }
 
@@ -432,7 +571,8 @@
       inp.value = (current !== undefined && current !== null && current !== "") ? current : "";
       inp.placeholder = String(defaultVal);
       inp.style.cssText = "width:100%;padding:6px 8px;border:1px solid var(--divider-color,#ccc);border-radius:6px;font-size:13px;background:var(--card-background-color,#fff);color:var(--primary-text-color,#333);box-sizing:border-box";
-      inp.addEventListener("input", function() {
+      /* change fires on blur — preserves focus while typing */
+      inp.addEventListener("change", function() {
         if (this.value === "" || this.value === String(defaultVal)) {
           delete self._config[key];
         } else {
