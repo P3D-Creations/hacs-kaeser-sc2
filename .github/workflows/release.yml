@@ -1,0 +1,92 @@
+name: Release
+
+on:
+  push:
+    branches: [master]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # need full history for tag detection
+
+      - name: Get current version from manifest
+        id: version
+        run: |
+          VERSION=$(jq -r '.version' custom_components/kaeser_sc2/manifest.json)
+          echo "manifest_version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Get latest release tag
+        id: latest
+        run: |
+          # Get the latest vX.Y.Z tag, or default to v0.0.0
+          LATEST=$(git tag -l 'v*' --sort=-v:refname | head -n1)
+          if [ -z "$LATEST" ]; then
+            LATEST="v0.0.0"
+          fi
+          echo "tag=$LATEST" >> "$GITHUB_OUTPUT"
+          echo "Latest tag: $LATEST"
+
+      - name: Bump patch version
+        id: bump
+        run: |
+          LATEST="${{ steps.latest.outputs.tag }}"
+          # Strip the 'v' prefix
+          VER="${LATEST#v}"
+          # Split into major.minor.patch
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$VER"
+          # Increment patch
+          PATCH=$((PATCH + 1))
+          NEW_VER="$MAJOR.$MINOR.$PATCH"
+          echo "new_version=$NEW_VER" >> "$GITHUB_OUTPUT"
+          echo "new_tag=v$NEW_VER" >> "$GITHUB_OUTPUT"
+          echo "Bumping $LATEST → v$NEW_VER"
+
+      - name: Update manifest.json version
+        run: |
+          NEW_VER="${{ steps.bump.outputs.new_version }}"
+          jq --arg v "$NEW_VER" '.version = $v' custom_components/kaeser_sc2/manifest.json > tmp.json
+          mv tmp.json custom_components/kaeser_sc2/manifest.json
+
+      - name: Commit version bump
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          NEW_VER="${{ steps.bump.outputs.new_version }}"
+          git add custom_components/kaeser_sc2/manifest.json
+          git diff --cached --quiet && echo "No changes to commit" || \
+            git commit -m "Bump version to $NEW_VER [skip ci]"
+          git push
+
+      - name: Create tag
+        run: |
+          TAG="${{ steps.bump.outputs.new_tag }}"
+          git tag "$TAG"
+          git push origin "$TAG"
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          PREV="${{ steps.latest.outputs.tag }}"
+          TAG="${{ steps.bump.outputs.new_tag }}"
+          if [ "$PREV" = "v0.0.0" ]; then
+            CHANGES=$(git log --pretty=format:"- %s" HEAD)
+          else
+            CHANGES=$(git log --pretty=format:"- %s" "$PREV"..HEAD)
+          fi
+          # Write to file to avoid multiline issues
+          echo "$CHANGES" > /tmp/changelog.txt
+          echo "Generated changelog with $(echo "$CHANGES" | wc -l) entries"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.bump.outputs.new_tag }}
+          name: ${{ steps.bump.outputs.new_tag }}
+          body_path: /tmp/changelog.txt
+          generate_release_notes: false
