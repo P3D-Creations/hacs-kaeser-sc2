@@ -263,10 +263,16 @@ class SigmaControl2:
         if resp is None:
             return None
 
-        resp_code = resp.get("2")
+        # Response code may be int or str depending on controller firmware
+        raw_code = resp.get("2")
+        try:
+            resp_code = int(raw_code) if raw_code is not None else -1
+        except (ValueError, TypeError):
+            resp_code = -1
+
         _LOGGER.debug(
-            "API response app=%s svc=%s code=%s data_type=%s",
-            app_id, service_id, resp_code,
+            "API response app=%s svc=%s code=%s (raw=%r) data_type=%s",
+            app_id, service_id, resp_code, raw_code,
             type(resp.get("3")).__name__ if resp.get("3") is not None else "None",
         )
         if resp_code != RESP_SUCCESS:
@@ -274,8 +280,18 @@ class SigmaControl2:
                 _LOGGER.info("Session expired on %s, re-authenticating", self.host)
                 if await self.authenticate():
                     resp = await self._post_json(payload)
-                    if resp and resp.get("2") == RESP_SUCCESS:
-                        return resp.get("3")
+                    if resp:
+                        raw2 = resp.get("2")
+                        try:
+                            code2 = int(raw2) if raw2 is not None else -1
+                        except (ValueError, TypeError):
+                            code2 = -1
+                        if code2 == RESP_SUCCESS:
+                            return resp.get("3")
+            _LOGGER.warning(
+                "API call failed for %s: app=%s svc=%s code=%s",
+                self.host, app_id, service_id, resp_code,
+            )
             return None
 
         return resp.get("3")
@@ -337,7 +353,12 @@ class SigmaControl2:
     def _find_start_page(self, obj: Any) -> dict | None:
         """Find the TYPE_START_PAGE object in the flat menu array."""
         if isinstance(obj, dict):
-            if obj.get("Type") == TYPE_START_PAGE:
+            raw_type = obj.get("Type")
+            try:
+                obj_type = int(raw_type) if raw_type is not None else None
+            except (ValueError, TypeError):
+                obj_type = None
+            if obj_type == TYPE_START_PAGE:
                 return obj
             # Iterate numeric-keyed flat array
             for item in self._iter_numeric_dict(obj):
@@ -363,7 +384,11 @@ class SigmaControl2:
         items = self._iter_numeric_dict(menu) if isinstance(menu, (dict, list)) else []
         for item in items:
             if isinstance(item, dict) and item.get("Id") is not None:
-                index[item["Id"]] = item
+                try:
+                    idx = int(item["Id"])
+                except (ValueError, TypeError):
+                    continue
+                index[idx] = item
         return index
 
     def _extract_object_ids(self, start_page: dict, id_index: dict[int, dict]) -> list[int]:
@@ -384,6 +409,12 @@ class SigmaControl2:
             """Recursively collect object IDs from a reference."""
             if ref is None:
                 return
+            # Convert string IDs to int
+            if isinstance(ref, str):
+                try:
+                    ref = int(ref)
+                except ValueError:
+                    return
             if isinstance(ref, int):
                 # This is an ID referencing another object in the menu
                 if ref in id_index:
@@ -398,8 +429,17 @@ class SigmaControl2:
                 _collect_from_obj(ref)
 
         def _collect_from_obj(obj: dict) -> None:
-            obj_type = obj.get("Type")
+            raw_type = obj.get("Type")
+            try:
+                obj_type = int(raw_type) if raw_type is not None else None
+            except (ValueError, TypeError):
+                obj_type = None
             obj_id = obj.get("Id")
+            if isinstance(obj_id, str):
+                try:
+                    obj_id = int(obj_id)
+                except ValueError:
+                    pass
 
             # If it's a container (start_page, line, menu), recurse into children
             if obj_type in (TYPE_START_PAGE, TYPE_LINE, TYPE_START_MENU, TYPE_MENU):
@@ -457,12 +497,16 @@ class SigmaControl2:
         return None
 
     @staticmethod
-    def _led_str(state: int) -> str:
+    def _led_str(state: Any) -> str:
+        try:
+            s = int(state)
+        except (ValueError, TypeError):
+            return "off"
         return {
             LED_STATE_OFF: "off",
             LED_STATE_ON: "on",
             LED_STATE_FLASH: "flash",
-        }.get(state, "off")
+        }.get(s, "off")
 
     # ------------------------------------------------------------------
     # Main poll
@@ -571,7 +615,11 @@ class SigmaControl2:
         for obj in obj_list:
             if not isinstance(obj, dict):
                 continue
-            ot = obj.get("Type")
+            raw_type = obj.get("Type")
+            try:
+                ot = int(raw_type) if raw_type is not None else None
+            except (ValueError, TypeError):
+                ot = None
             vt = self._value_text(obj)
             unit = self._unit_text(obj)
 
