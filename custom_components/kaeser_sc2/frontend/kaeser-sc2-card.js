@@ -1,5 +1,5 @@
 /**
- * Kaeser Sigma Control 2 — Custom Lovelace Card  v4.0.1
+ * Kaeser Sigma Control 2 — Custom Lovelace Card  v5.0.0
  *
  * Pixel-accurate replica of the SC2 controller front panel.
  *  - Device picker dropdown in editor (auto-discovers Kaeser entities)
@@ -11,7 +11,7 @@
 (function () {
   "use strict";
 
-  var CARD_VERSION = "4.0.2";
+  var CARD_VERSION = "5.0.0";
 
   /* ── Card-picker registration — MUST run before the guard ──────
    * If the browser has a cached old version that already called
@@ -323,8 +323,9 @@
         var raw = this._binaryState(name);
         var ent = this._entity("binary_sensor", name);
         var ledRaw = (ent && ent.attributes) ? (ent.attributes.led_raw_state || "") : "";
-        if (raw === "on" || ledRaw === "flash") {
-          img.src = IMG_BASE + "/led_" + (LED_COLOURS[name]||"green") + ".png";
+        var ledColor = (ent && ent.attributes) ? (ent.attributes.led_color || LED_COLOURS[name] || "green") : (LED_COLOURS[name] || "green");
+        if (raw === "on" || ledRaw === "on" || ledRaw === "flash") {
+          img.src = IMG_BASE + "/led_" + ledColor + ".png";
           img.classList.toggle("flash", ledRaw === "flash");
         } else {
           img.src = IMG_BASE + "/led_off.png";

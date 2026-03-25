@@ -58,24 +58,34 @@ async def async_get_config_entry_diagnostics(
         data = coordinator.data
         diag["coordinator"] = {
             "online": data.online,
-            "status_text": data.status_text,
             "state": data.state,
             "pressure": data.pressure,
+            "pressure_unit": data.pressure_unit,
             "temperature": data.temperature,
-            "model": data.model,
-            "serial": data.serial,
+            "temperature_unit": data.temperature_unit,
+            "name": data.name,
+            "run_hours": data.run_hours,
+            "load_hours": data.load_hours,
+            "maintenance_in": data.maintenance_in,
+            "key_switch": data.key_switch,
+            "pa_status": data.pa_status,
+            "led_error": data.led_error,
+            "led_com_error": data.led_com_error,
+            "led_maintenance": data.led_maintenance,
+            "led_voltage": data.led_voltage,
+            "led_load": data.led_load,
+            "led_idle": data.led_idle,
+            "led_remote": data.led_remote,
+            "led_clock": data.led_clock,
+            "led_power_on": data.led_power_on,
+            "active_messages_count": len(data.active_messages),
             "last_update": coordinator.last_update_success_time.isoformat()
             if coordinator.last_update_success_time
             else None,
             "update_interval_s": coordinator.update_interval.total_seconds()
             if coordinator.update_interval
             else None,
-            "sensor_count": len(data.sensors) if data.sensors else 0,
         }
-
-        # Include sensor names (but not values — they're in entities)
-        if data.sensors:
-            diag["sensor_names"] = sorted(data.sensors.keys())
     else:
         diag["coordinator"] = {
             "online": False,

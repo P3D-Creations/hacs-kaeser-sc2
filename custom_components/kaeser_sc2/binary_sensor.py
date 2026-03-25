@@ -29,6 +29,8 @@ class KaeserBinarySensorDescription(BinarySensorEntityDescription):
     """Extended binary sensor description."""
 
     value_fn: Callable[[CompressorData], bool]
+    raw_state_fn: Callable[[CompressorData], str] | None = None
+    led_color: str | None = None  # Hardcoded LED colour matching SC2 firmware
 
 
 def _led_on(val: str) -> bool:
@@ -43,6 +45,8 @@ BINARY_SENSOR_DESCRIPTIONS: tuple[KaeserBinarySensorDescription, ...] = (
         device_class=BinarySensorDeviceClass.PROBLEM,
         icon="mdi:alert-circle",
         value_fn=lambda d: _led_on(d.led_error),
+        raw_state_fn=lambda d: d.led_error,
+        led_color="red",
     ),
     KaeserBinarySensorDescription(
         key="led_com_error",
@@ -50,6 +54,8 @@ BINARY_SENSOR_DESCRIPTIONS: tuple[KaeserBinarySensorDescription, ...] = (
         device_class=BinarySensorDeviceClass.PROBLEM,
         icon="mdi:lan-disconnect",
         value_fn=lambda d: _led_on(d.led_com_error),
+        raw_state_fn=lambda d: d.led_com_error,
+        led_color="red",
     ),
     KaeserBinarySensorDescription(
         key="led_maintenance",
@@ -57,6 +63,8 @@ BINARY_SENSOR_DESCRIPTIONS: tuple[KaeserBinarySensorDescription, ...] = (
         device_class=BinarySensorDeviceClass.PROBLEM,
         icon="mdi:wrench",
         value_fn=lambda d: _led_on(d.led_maintenance),
+        raw_state_fn=lambda d: d.led_maintenance,
+        led_color="orange",
     ),
     KaeserBinarySensorDescription(
         key="led_voltage",
@@ -64,30 +72,40 @@ BINARY_SENSOR_DESCRIPTIONS: tuple[KaeserBinarySensorDescription, ...] = (
         device_class=BinarySensorDeviceClass.POWER,
         icon="mdi:flash",
         value_fn=lambda d: _led_on(d.led_voltage),
+        raw_state_fn=lambda d: d.led_voltage,
+        led_color="green",
     ),
     KaeserBinarySensorDescription(
         key="led_load",
         translation_key="led_load",
         icon="mdi:engine",
         value_fn=lambda d: _led_on(d.led_load),
+        raw_state_fn=lambda d: d.led_load,
+        led_color="green",
     ),
     KaeserBinarySensorDescription(
         key="led_idle",
         translation_key="led_idle",
         icon="mdi:sleep",
         value_fn=lambda d: _led_on(d.led_idle),
+        raw_state_fn=lambda d: d.led_idle,
+        led_color="green",
     ),
     KaeserBinarySensorDescription(
         key="led_remote",
         translation_key="led_remote",
         icon="mdi:remote-desktop",
         value_fn=lambda d: _led_on(d.led_remote),
+        raw_state_fn=lambda d: d.led_remote,
+        led_color="green",
     ),
     KaeserBinarySensorDescription(
         key="led_clock",
         translation_key="led_clock",
         icon="mdi:clock-outline",
         value_fn=lambda d: _led_on(d.led_clock),
+        raw_state_fn=lambda d: d.led_clock,
+        led_color="green",
     ),
     KaeserBinarySensorDescription(
         key="led_power_on",
@@ -95,6 +113,8 @@ BINARY_SENSOR_DESCRIPTIONS: tuple[KaeserBinarySensorDescription, ...] = (
         device_class=BinarySensorDeviceClass.POWER,
         icon="mdi:power",
         value_fn=lambda d: _led_on(d.led_power_on),
+        raw_state_fn=lambda d: d.led_power_on,
+        led_color="green",
     ),
 )
 
@@ -155,6 +175,17 @@ class KaeserBinarySensor(
         if not self.coordinator.data:
             return None
         return self.entity_description.value_fn(self.coordinator.data)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        """Expose LED raw state and colour as entity attributes."""
+        attrs: dict[str, Any] = {}
+        desc = self.entity_description
+        if desc.raw_state_fn and self.coordinator.data:
+            attrs["led_raw_state"] = desc.raw_state_fn(self.coordinator.data)
+        if desc.led_color:
+            attrs["led_color"] = desc.led_color
+        return attrs if attrs else None
 
     @property
     def available(self) -> bool:

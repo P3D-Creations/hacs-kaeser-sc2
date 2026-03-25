@@ -165,18 +165,10 @@ class SigmaControl2:
             session = await self._ensure_session()
 
             # Step 1: get Session-Key
-            _LOGGER.debug("Auth step 1: GET %s/login.html", self.host)
             async with session.get(
                 f"{self.host}/login.html",
                 headers={"Content-Type": "text/html"},
             ) as resp:
-                status1 = resp.status
-                _LOGGER.debug(
-                    "Auth step 1 response: status=%s headers=%s",
-                    status1,
-                    {k: v for k, v in resp.headers.items()
-                     if k.lower() in ("content-type", "server", "set-cookie")},
-                )
                 resp.raise_for_status()
 
             self._session_key = self._get_cookie("Session-Key")
@@ -187,14 +179,12 @@ class SigmaControl2:
                     [c.key for c in session.cookie_jar],
                 )
                 return False
-            _LOGGER.debug("Auth step 1 OK: Session-Key=%s", self._session_key[:8] + "...")
 
             # Step 2-3: compute auth
             self._ha1 = _sha256(f"{self.username}:user@sc2:{self.password}")
             auth_hash = _sha256(f"{self._ha1}:{self._session_key}")
 
             # Step 4: login
-            _LOGGER.debug("Auth step 4: GET %s/login.html with auth headers", self.host)
             async with session.get(
                 f"{self.host}/login.html",
                 headers={
@@ -203,10 +193,6 @@ class SigmaControl2:
                     "Session-Auth": auth_hash,
                 },
             ) as resp:
-                _LOGGER.debug(
-                    "Auth step 4 response: status=%s",
-                    resp.status,
-                )
                 resp.raise_for_status()
 
             session_id = self._get_cookie("Session-Id")
@@ -218,17 +204,13 @@ class SigmaControl2:
                 return True
 
             _LOGGER.warning(
-                "Login failed for %s (Session-Id=%s). Cookies: %s",
+                "Login failed for %s (Session-Id=%s)",
                 self.host, session_id,
-                [c.key for c in session.cookie_jar],
             )
             return False
 
         except Exception as exc:
-            _LOGGER.error(
-                "Login error for %s: [%s] %s (repr=%r)",
-                self.host, type(exc).__name__, exc, exc,
-            )
+            _LOGGER.error("Login error for %s: %s", self.host, exc)
             return False
 
     async def test_connection(self) -> bool:
@@ -243,75 +225,52 @@ class SigmaControl2:
         tcp_ok = False
         for attempt in range(1, 4):
             try:
-                _LOGGER.debug(
-                    "TCP reachability check for %s:%s (attempt %d/3)",
-                    host, port, attempt,
-                )
                 _, writer = await asyncio.wait_for(
                     asyncio.open_connection(host, port), timeout=10
                 )
                 writer.close()
                 await writer.wait_closed()
-                _LOGGER.debug("TCP reachability OK for %s:%s", host, port)
                 tcp_ok = True
                 break
             except asyncio.TimeoutError:
                 _LOGGER.warning(
-                    "TCP connection to %s:%s timed out (attempt %d/3). "
-                    "The SC2 controller may only accept one connection — "
-                    "close any browser tabs to this controller.",
+                    "TCP to %s:%s timed out (attempt %d/3)",
                     host, port, attempt,
                 )
             except OSError as exc:
                 _LOGGER.warning(
-                    "TCP connection to %s:%s failed (attempt %d/3): [%s] %s",
-                    host, port, attempt, type(exc).__name__, exc,
+                    "TCP to %s:%s failed (attempt %d/3): %s",
+                    host, port, attempt, exc,
                 )
-            # Wait before retrying to give the controller time to free up
             if attempt < 3:
                 await asyncio.sleep(3)
 
         if not tcp_ok:
             _LOGGER.error(
-                "All 3 TCP connection attempts to %s:%s failed. "
-                "Possible causes: (1) another device/browser has an active "
-                "session — close ALL browser tabs to http://%s then retry, "
-                "(2) the controller is powered off, or "
-                "(3) a firewall/VLAN is blocking the connection from Home Assistant.",
-                host, port, host,
+                "All TCP attempts to %s:%s failed — check network/power",
+                host, port,
             )
             return False
 
-        # HTTP probe: simple GET / to verify the web server responds
+        # HTTP probe: verify the web server responds
         try:
             session = await self._ensure_session()
-            _LOGGER.debug("HTTP probe: GET %s/", self.host)
             async with session.get(f"{self.host}/") as resp:
-                _LOGGER.debug(
-                    "HTTP probe response: status=%s server=%s content-type=%s",
-                    resp.status,
-                    resp.headers.get("Server", "?"),
-                    resp.headers.get("Content-Type", "?"),
-                )
+                pass  # Any response means the server is alive
         except Exception as exc:
             _LOGGER.warning(
-                "HTTP probe failed for %s: [%s] %s — "
-                "the controller may only accept one connection at a time. "
-                "Close any open browser tabs to this controller and retry.",
-                self.host, type(exc).__name__, exc,
+                "HTTP probe failed for %s: %s", self.host, exc,
             )
-            # Close the failed session so authenticate() starts fresh
             await self.close()
 
         try:
             ok = await self.authenticate()
             if not ok:
-                _LOGGER.warning("test_connection: authenticate returned False for %s", self.host)
+                _LOGGER.warning("test_connection: auth failed for %s", self.host)
             return ok
         except Exception as exc:
             _LOGGER.error(
-                "test_connection failed for %s: [%s] %s",
-                self.host, type(exc).__name__, exc,
+                "test_connection failed for %s: %s", self.host, exc,
             )
             return False
         finally:
@@ -366,9 +325,10 @@ class SigmaControl2:
                 return None
         except Exception as exc:
             _LOGGER.error(
-                "Request error for %s: [%s] %s",
-                self.host, type(exc).__name__, exc,
+                "Request error for %s: %s", self.host, exc,
             )
+            # Connection failed — invalidate auth so next poll re-authenticates
+            self._authenticated = False
             return None
 
     async def _api_call(
@@ -390,12 +350,6 @@ class SigmaControl2:
             resp_code = -1
 
         data_field = resp.get("3")
-        _LOGGER.debug(
-            "API response app=%s svc=%s code=%s (raw=%r) data_type=%s resp_keys=%s",
-            app_id, service_id, resp_code, raw_code,
-            type(data_field).__name__ if data_field is not None else "None",
-            list(resp.keys()) if isinstance(resp, dict) else "N/A",
-        )
         if resp_code != RESP_SUCCESS:
             if resp_code == RESP_APP_LOGOUT:
                 _LOGGER.info("Session expired on %s, re-authenticating", self.host)
@@ -415,11 +369,6 @@ class SigmaControl2:
             )
             return None
 
-        if data_field is None:
-            _LOGGER.debug(
-                "API call app=%s svc=%s succeeded but no data field ('3') in response",
-                app_id, service_id,
-            )
         return data_field
 
     # ------------------------------------------------------------------
@@ -427,12 +376,6 @@ class SigmaControl2:
     # ------------------------------------------------------------------
     async def get_menu_structure(self) -> Any | None:
         data = await self._api_call(APP_ID_HMI, SER_ID_HMI_GET_HMI_MENU)
-        _LOGGER.debug(
-            "get_menu_structure: data_type=%s truthy=%s keys=%s",
-            type(data).__name__ if data is not None else "None",
-            bool(data) if data is not None else False,
-            list(data.keys())[:20] if isinstance(data, dict) else "N/A",
-        )
         if data is not None:
             self._menu_tree = data
         return data
@@ -622,64 +565,23 @@ class SigmaControl2:
             _LOGGER.warning("Menu response is empty (%s) from %s", type(menu).__name__, self.host)
             return []
 
-        # Dump raw menu structure for debugging (truncated)
-        try:
-            menu_repr = repr(menu)
-            if len(menu_repr) > 3000:
-                menu_repr = menu_repr[:3000] + "...(truncated)"
-            _LOGGER.debug("Raw menu data from %s: %s", self.host, menu_repr)
-        except Exception:  # noqa: BLE001
-            _LOGGER.debug("Could not repr menu data from %s", self.host)
-
-        _LOGGER.debug(
-            "Menu data type=%s keys=%s",
-            type(menu).__name__,
-            list(menu.keys())[:20] if isinstance(menu, dict) else "N/A",
-        )
-
         # Strategy 1: find the start page and resolve its children
         sp = self._find_start_page(menu)
         if sp:
-            _LOGGER.debug("Found start page: Type=%s Id=%s", sp.get("Type"), sp.get("Id"))
             id_index = self._build_id_index(menu)
-            _LOGGER.debug("ID index has %d entries", len(id_index))
             ids = self._extract_object_ids_from_page(sp, id_index)
             if ids:
-                _LOGGER.debug("Strategy 1 (start page): found %d IDs: %s", len(ids), ids)
+                _LOGGER.debug("Menu discovery: found %d object IDs via start page", len(ids))
                 return ids
-            _LOGGER.debug("Strategy 1: start page found but no IDs extracted")
-        else:
-            _LOGGER.debug("Strategy 1: no TYPE_START_PAGE (Type=0) found in menu")
-            # Log all Type values found for debugging
-            types_found: set[int] = set()
-            def _find_types(obj: Any) -> None:
-                if isinstance(obj, dict):
-                    t = self._safe_int(obj.get("Type"))
-                    if t is not None:
-                        types_found.add(t)
-                    for v in obj.values():
-                        if isinstance(v, (dict, list)):
-                            _find_types(v)
-                elif isinstance(obj, list):
-                    for item in obj:
-                        _find_types(item)
-            _find_types(menu)
-            _LOGGER.debug("Types found in menu: %s", sorted(types_found))
 
         # Strategy 2: brute-force collect all IDs from the menu
-        _LOGGER.debug("Trying brute-force ID extraction")
         all_ids = self._extract_all_ids(menu)
         if all_ids:
-            _LOGGER.debug("Strategy 2 (brute-force): found %d candidate IDs: %s", len(all_ids), all_ids)
+            _LOGGER.debug("Menu discovery: found %d object IDs via brute-force", len(all_ids))
             return all_ids
 
         _LOGGER.warning(
-            "Could not discover any HMI object IDs from %s. "
-            "Menu type=%s, menu keys=%s. Please enable debug logging "
-            "and share the output.",
-            self.host,
-            type(menu).__name__,
-            list(menu.keys())[:20] if isinstance(menu, dict) else "N/A",
+            "Could not discover any HMI object IDs from %s", self.host,
         )
         return []
 
@@ -714,10 +616,17 @@ class SigmaControl2:
     async def poll(self) -> CompressorData:
         """Poll all data and return a snapshot."""
         data = CompressorData()
+        any_success = False
 
+        # Authenticate (or re-authenticate after connection loss)
         if not self._authenticated:
+            # Close stale session so we start fresh
+            if self._session and not self._session.closed:
+                await self.close()
+                self._session = None
             if not await self.authenticate():
-                _LOGGER.warning("Cannot auth to %s — trying unauthenticated", self.host)
+                _LOGGER.warning("Cannot authenticate to %s", self.host)
+                return data  # online=False
 
         # Discover object IDs (once)
         if not self._object_ids:
@@ -728,6 +637,7 @@ class SigmaControl2:
             hmi = await self.get_hmi_objects(self._object_ids)
             if hmi:
                 self._parse_hmi(data, hmi)
+                any_success = True
             else:
                 _LOGGER.warning("HMI objects request returned empty from %s", self.host)
         else:
@@ -737,6 +647,7 @@ class SigmaControl2:
         led = await self.get_led_status()
         if led:
             self._parse_leds(data, led)
+            any_success = True
 
         # Compressor name/info
         info = await self.get_compressor_info()
@@ -748,32 +659,34 @@ class SigmaControl2:
                 data.name = f"SC2 {comp_seq}-{comp_type}" if comp_seq else comp_type
             elif pn:
                 data.name = pn
+            any_success = True
 
         # I/O
         io = await self.get_io_data()
         if io:
             data.io_data = io
+            any_success = True
 
         # Reports
         try:
             rpt = await self.get_reports(report_list=0, start=0, count=10)
             if rpt:
                 self._parse_reports(data, rpt)
+                any_success = True
         except Exception:  # noqa: BLE001
             pass
 
-        data.online = True
-        _LOGGER.debug(
-            "Poll result from %s: pressure=%s %s, temp=%s %s, state=%s, "
-            "run_hours=%s, load_hours=%s, maint_in=%s, key=%s, pa=%s, time=%s",
-            self.host,
-            data.pressure, data.pressure_unit,
-            data.temperature, data.temperature_unit,
-            data.state,
-            data.run_hours, data.load_hours, data.maintenance_in,
-            data.key_switch, data.pa_status,
-            data.controller_time,
-        )
+        # Only mark online if at least one request returned data
+        if any_success:
+            data.online = True
+        else:
+            _LOGGER.warning(
+                "All requests to %s returned no data — marking offline",
+                self.host,
+            )
+            # Force re-auth on next poll
+            self._authenticated = False
+
         return data
 
     # ------------------------------------------------------------------
@@ -816,11 +729,6 @@ class SigmaControl2:
             else:
                 vt = str(vt).strip()
             unit = (obj.get("Unit") or "").strip() if isinstance(obj.get("Unit"), str) else ""
-
-            _LOGGER.debug(
-                "HMI Id=%s Type=%s Value=%r Unit=%r",
-                obj.get("Id"), ot, vt, unit,
-            )
 
             # --- Status bar items (one of each) ---
             if ot == TYPE_PRESSURE:
@@ -940,7 +848,6 @@ class SigmaControl2:
     def _parse_leds(self, data: CompressorData, led_data: dict) -> None:
         if not isinstance(led_data, dict):
             return
-        _LOGGER.debug("LED keys: %s", list(led_data.keys()))
         led_names = [
             "led_error", "led_com_error", "led_maintenance", "led_voltage",
             "led_load", "led_idle", "led_remote", "led_clock", "led_power_on",
