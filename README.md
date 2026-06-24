@@ -23,7 +23,7 @@ Includes a **custom Lovelace card** that replicates the SC2 controller's front p
 
 1. Open HACS in your Home Assistant instance
 2. Click **Integrations** → **⋮** menu → **Custom repositories**
-3. Add `https://github.com/yourusername/hacs-kaeser-sc2` with category **Integration**
+3. Add `https://github.com/p3d-creations/hacs-kaeser-sc2` with category **Integration**
 4. Click **Install**
 5. Restart Home Assistant
 
