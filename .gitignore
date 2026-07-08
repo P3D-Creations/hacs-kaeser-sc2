@@ -25,5 +25,3 @@ build/
 
 # Diagnostics
 *.log
-./Logs/
-./ReferenceData/

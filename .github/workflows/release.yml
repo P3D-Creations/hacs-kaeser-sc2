@@ -32,7 +32,7 @@ jobs:
           echo "tag=$LATEST" >> "$GITHUB_OUTPUT"
           echo "Latest tag: $LATEST"
 
-      - name: Bump patch version
+      - name: Bump version
         id: bump
         run: |
           LATEST="${{ steps.latest.outputs.tag }}"
@@ -40,8 +40,15 @@ jobs:
           VER="${LATEST#v}"
           # Split into major.minor.patch
           IFS='.' read -r MAJOR MINOR PATCH <<< "$VER"
-          # Increment patch
-          PATCH=$((PATCH + 1))
+          # Bump level from head commit message: [major] or [minor], else patch
+          HEAD_MSG=$(git log -1 --pretty=%B)
+          if echo "$HEAD_MSG" | grep -qi '\[major\]'; then
+            MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0
+          elif echo "$HEAD_MSG" | grep -qi '\[minor\]'; then
+            MINOR=$((MINOR + 1)); PATCH=0
+          else
+            PATCH=$((PATCH + 1))
+          fi
           NEW_VER="$MAJOR.$MINOR.$PATCH"
           echo "new_version=$NEW_VER" >> "$GITHUB_OUTPUT"
           echo "new_tag=v$NEW_VER" >> "$GITHUB_OUTPUT"

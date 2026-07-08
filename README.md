@@ -1,152 +1,75 @@
-# Kaeser Sigma Control 2 — Home Assistant Integration
+# Kaeser Sigma Control 2 for Home Assistant
 
-[![HACS Validation](https://github.com/P3D-Creations/hacs-kaeser-sc2/actions/workflows/validate.yml/badge.svg)](https://github.com/yourusername/hacs-kaeser-sc2/actions/workflows/validate.yml)
+[![HACS Validation](https://github.com/P3D-Creations/hacs-kaeser-sc2/actions/workflows/validate.yml/badge.svg)](https://github.com/P3D-Creations/hacs-kaeser-sc2/actions/workflows/validate.yml)
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://github.com/hacs/integration)
 
-A native Home Assistant integration for **Kaeser rotary screw air compressors** equipped with the **Sigma Control 2** controller. Communicates directly with the controller's built-in web server — no MQTT broker required.
-
-Includes a **custom Lovelace card** that replicates the SC2 controller's front panel display.
-
-![Screenshot placeholder — replace with actual screenshot](https://via.placeholder.com/600x300?text=Kaeser+SC2+Card)
-
-## Features
-
-- **Native HA integration** — no MQTT, no Docker, no add-ons needed
-- **Config flow UI** — add compressors via Settings → Integrations → Add → "Kaeser Sigma Control 2"
-- **Each compressor is its own device** with all sensors grouped under it
-- **Custom Lovelace card** replicating the SC2 controller's physical display
-- **Auto-discovery of sensor data** from the controller's HMI menu structure
+Native Home Assistant integration for Kaeser rotary screw compressors with the Sigma Control 2 controller. Talks JSON-RPC directly to the controller's embedded web server; no MQTT or add-ons. Includes a Lovelace card that replicates the SC2 front panel.
 
 ## Installation
 
-### HACS (Recommended)
+HACS: add `https://github.com/P3D-Creations/hacs-kaeser-sc2` as a custom repository (category: Integration), install, restart Home Assistant.
 
-1. Open HACS in your Home Assistant instance
-2. Click **Integrations** → **⋮** menu → **Custom repositories**
-3. Add `https://github.com/p3d-creations/hacs-kaeser-sc2` with category **Integration**
-4. Click **Install**
-5. Restart Home Assistant
-
-### Manual
-
-1. Copy the `custom_components/kaeser_sc2` folder into your HA `config/custom_components/` directory
-2. Copy the `js/kaeser-sc2-card.js` file into your HA `config/js/` directory (create `js/` if needed)
-3. Restart Home Assistant
+Manual: copy `custom_components/kaeser_sc2/` into `config/custom_components/` and restart. The card JS ships inside the integration and registers itself.
 
 ## Configuration
 
-1. Go to **Settings → Devices & Services → Add Integration**
-2. Search for **"Kaeser Sigma Control 2"**
-3. Enter:
-   - **Device name** — A friendly name (e.g. "Shop Air Compressor") — used for entity IDs
-   - **Host** — IP address of the controller (e.g. `192.168.2.230`)
-   - **Username** — Web interface login username
-   - **Password** — Web interface login password
-   - **Poll interval** — How often to read data (10–300 seconds, default 30)
-4. Click **Submit**
+Settings > Devices & Services > Add Integration > "Kaeser Sigma Control 2". Fields:
 
-Repeat for each compressor. Each one appears as a separate device.
+| Field | Notes |
+|-------|-------|
+| Device name | Used to build entity IDs (slugified) |
+| Host | Controller IP, e.g. `192.168.2.230` |
+| Username / Password | Web interface login |
+| Poll interval | 10-300 s, default 30; changeable later via Configure |
 
-## Entities Created
+Each compressor is a separate device with its own entities.
 
-Each compressor creates the following entities:
+## Entities
 
-### Sensors
+Sensors: Pressure, Temperature, State, Run Hours, Load Hours, Maintenance In, Key Switch, PA Status, Controller Time, Active Message.
 
-| Entity | Description |
-|--------|-------------|
-| **Pressure** | Current system pressure (psi or bar) |
-| **Temperature** | Discharge temperature |
-| **State** | Operational state: off, load, idle, ready, standby, error |
-| **Run Hours** | Total running hours |
-| **Maintenance In** | Hours until next maintenance |
-| **Key Switch** | Key switch position |
-| **PA Status** | Pressure actuator / remote status |
-| **Controller Time** | Time displayed on the controller |
-| **Active Message** | Text of the most recent active fault/warning message ("none" when clear). Attributes hold the recent message history (`messages`), the currently-active subset (`active_messages`), and `active_count` |
+Active Message state is the text of the most recent active fault/warning, or `none`. Attributes: `messages` (recent history, newest first), `active_messages` (currently active subset), `active_count`.
 
-### Binary Sensors (LED Indicators)
+Binary sensors mirror the nine panel LEDs: Error (red), Communication Error (red), Maintenance Due (orange), Voltage OK, Load, Idle, Remote, Clock, Power On (green). Each exposes `led_raw_state` (`off`/`on`/`flash`) and `led_color` attributes.
 
-| Entity | Description |
-|--------|-------------|
-| **Error** | Error alarm active (red LED) |
-| **Communication Error** | Comm error active (red LED) |
-| **Maintenance Due** | Maintenance required (orange LED) |
-| **Voltage OK** | Power supply OK (green LED) |
-| **Load** | Compressor under load (green LED) |
-| **Idle** | Compressor idling (green LED) |
-| **Remote** | Remote control active (green LED) |
-| **Clock** | Timer/clock function active (green LED) |
-| **Power On** | Controller powered on (green LED) |
-
-## Custom Lovelace Card
-
-The integration includes a custom card that mimics the physical SC2 controller display:
-
-- LCD-style status bar with pressure, time, and temperature
-- Operational state badge
-- Key switch and PA status
-- Run hours and maintenance countdown
-- LED indicator column matching the physical controller, including blinking-fault animation
-- Fault/warning popup on the LCD when the controller reports an active message — press the ≡ (acknowledge) button on the card to dismiss it (card-side only; the real compressor keeps its message and the LED stays lit until it clears)
-- Press ≡ again to view the recent-message history with timestamps; press once more to return to the live display
-- Text and layout scale with the card width (CSS container queries), so the panel stays proportional at any dashboard column size
-
-### Card Configuration
-
-Add to your Lovelace dashboard (YAML mode):
+## Lovelace card
 
 ```yaml
 type: custom:kaeser-sc2-card
-entity_prefix: "shop_air_compressor"
-title: "Shop Air Compressor"
+entity_prefix: shop_air_compressor
+title: Shop Air Compressor
 ```
 
-The `entity_prefix` is the slugified version of the device name you entered during setup (lowercase, spaces → underscores). For example, "Shop Air Compressor" becomes `shop_air_compressor`. Check your entity IDs in **Settings → Devices → [your compressor] → Entities** to confirm.
+`entity_prefix` is the slugified device name (`Shop Air Compressor` -> `shop_air_compressor`); confirm against your entity IDs. The card is also available in the visual card picker ("Kaeser Sigma Control 2") with a compressor dropdown.
 
-### Card Editor
+Behavior:
 
-The card also supports the Lovelace visual editor — just add a "Custom: Kaeser Sigma Control 2" card from the card picker.
+- Live status bar (pressure, controller time, temperature) and LCD lines matching the physical display
+- LED indicators with correct colors and blinking for flash states
+- Text and layout scale with card width (CSS container queries)
+- Active fault/warning pops up on the LCD. The acknowledge button (circle with bars, top-left cluster) dismisses it; dismissal is browser-side only and the LED keeps tracking the compressor. Pressing it again shows the recent-message history; once more returns to the live display. New messages reappear automatically.
 
-### Adding the card resource (if not auto-loaded)
+If the card does not load, add `/kaeser_sc2/kaeser-sc2-card.js` as a JavaScript Module under Settings > Dashboards > Resources, and hard-refresh the browser after updates.
 
-The integration automatically registers the card JS. If it doesn't appear, manually add it:
+## Protocol
 
-1. Go to **Settings → Dashboards → ⋮ → Resources**
-2. Add `/kaeser_sc2/kaeser-sc2-card.js` as a JavaScript Module
-
-## How It Works
-
-The Sigma Control 2 controller has an embedded web server that serves a JavaScript SPA. Instead of scraping HTML, this integration speaks the same **JSON-RPC protocol** that the original JavaScript frontend uses:
-
-- **Endpoint:** `POST http://<ip>/json.json`
-- **Authentication:** SHA256 challenge-response (handled automatically — just provide your username and password)
-- **Data:** HMI objects (pressure, temperature, counters), LED states, I/O data, alarms
-
-The integration discovers available sensors dynamically by parsing the controller's HMI menu tree, so it adapts to different Kaeser models and firmware versions.
+The integration authenticates with the controller's SHA256 challenge-response login and polls `POST http://<ip>/json.json` for HMI objects (pressure, temperature, counters, enums), LED states, I/O data, and the report list (messages). Sensor discovery walks the controller's HMI menu tree, so it adapts to different models and firmware.
 
 ## Troubleshooting
 
-| Problem | Solution |
-|---------|----------|
-| "Cannot connect" during setup | Verify IP is reachable. Try opening `http://<ip>/login.html` in a browser. |
-| Login fails | Check username/password. Default credentials may be on a sticker on the controller. |
-| Sensors showing "unavailable" | Set logging to debug: add `custom_components.kaeser_sc2: debug` to your `logger` config. Check for session timeout issues. |
-| Pressure/temperature missing | The HMI object structure varies by firmware. File an issue with debug logs. |
-| Card not appearing | Ensure the JS resource is registered (see above). Clear browser cache. |
-
-### Debug Logging
+| Problem | Check |
+|---------|-------|
+| Cannot connect during setup | `http://<ip>/login.html` reachable in a browser |
+| Login fails | Credentials; defaults may be printed on the controller |
+| Entities unavailable | Enable debug logging (below); look for auth/session errors |
+| Missing values | HMI layout varies by firmware; open an issue with debug logs |
+| Card not appearing | Resource registered (see above); clear browser cache |
 
 ```yaml
 logger:
-  default: info
   logs:
     custom_components.kaeser_sc2: debug
 ```
-
-## Contributing
-
-Issues and PRs welcome. If your Kaeser model has different HMI object types or LED configurations, please open an issue with debug logs so we can add support.
 
 ## License
 

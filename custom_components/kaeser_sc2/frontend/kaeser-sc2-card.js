@@ -13,7 +13,7 @@
 (function () {
   "use strict";
 
-  var CARD_VERSION = "5.1.0";
+  var CARD_VERSION = "5.1.1";
 
   /* ── Card-picker registration — MUST run before the guard ──────
    * If the browser has a cached old version that already called
@@ -146,6 +146,15 @@
     if (msg.report_id !== undefined && msg.report_id !== null && msg.report_id !== "") return String(msg.report_id);
     if (msg.id !== undefined && msg.id !== null && msg.id !== "") return String(msg.id);
     return "";
+  }
+  /* Routine operational events (type 0, e.g. "Controller on") never raise
+   * the popup — filtered backend-side too, but keep the card safe when it
+   * runs against an older integration version. */
+  function _isOperationalMsg(msg) {
+    if (!msg) return false;
+    var t = msg.type;
+    if (t === 0 || t === "0") return true;
+    return String(msg.type_text || "").toLowerCase().indexOf("operation") === 0;
   }
 
   /* ╔═══════════════════════════════════════════════════════════════╗
@@ -412,10 +421,12 @@
     _activeMessages() {
       var e = this._activeMsgEntity();
       if (!e || !e.attributes) return [];
-      var am = e.attributes.active_messages;
-      if (am && am.length) return am;
-      /* fall back to active_count/messages if active_messages absent */
-      return [];
+      var am = e.attributes.active_messages || [];
+      var out = [];
+      for (var i = 0; i < am.length; i++) {
+        if (!_isOperationalMsg(am[i])) out.push(am[i]);
+      }
+      return out;
     }
     _allMessages() {
       var e = this._activeMsgEntity();

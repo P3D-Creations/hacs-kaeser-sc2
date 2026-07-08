@@ -14,7 +14,6 @@ import hashlib
 import logging
 import re
 from dataclasses import dataclass, field
-from http.cookies import SimpleCookie
 from typing import Any
 from urllib.parse import urlparse
 
@@ -24,13 +23,13 @@ from .const import (
     APP_ID_DATARECORDER,
     APP_ID_HMI,
     APP_ID_REPORTMANAGER,
-    APP_ID_SESSION_MANAGEMENT,
     LED_STATE_FLASH,
     LED_STATE_OFF,
     LED_STATE_ON,
     REP_ACTIVE_STATES,
     REP_LIST_STATUS,
     REP_STATE_LABELS,
+    REP_TYPE_COMPRESSOR_OPERATION,
     RESP_APP_LOGOUT,
     RESP_SUCCESS,
     SER_ID_GET_IO_DATA,
@@ -60,6 +59,20 @@ _LOGGER = logging.getLogger(__name__)
 def _sha256(text: str) -> str:
     """Return hex SHA-256 digest of a UTF-8 string."""
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _is_operational_message(msg: dict) -> bool:
+    """Return True for routine operational events (ReportType 0).
+
+    Examples: "Controller on", "Compressor on".  Matches the numeric type
+    when present, otherwise the localized type text ("Operational" /
+    "Operation ...") on firmware that omits the numeric field.
+    """
+    t = msg.get("type")
+    if isinstance(t, int):
+        return t == REP_TYPE_COMPRESSOR_OPERATION
+    type_text = str(msg.get("type_text") or t or "").strip().lower()
+    return type_text.startswith("operation")
 
 
 @dataclass
@@ -122,12 +135,20 @@ class CompressorData:
         (occurred, whether or not acknowledged) — i.e. the underlying fault /
         warning condition is still present.  A *going* state means the
         condition has cleared.
+
+        Routine operational events (ReportType 0, e.g. "Controller on",
+        "Compressor on") are excluded: the controller logs them in the status
+        list, but they are not faults/warnings and must not raise the
+        info/error popup.  They remain visible in recent_messages.
         """
         return [
             m
             for m in self.recent_messages
-            if m.get("state_raw") in REP_ACTIVE_STATES
-            or m.get("state") in ("coming", "coming_ack")
+            if (
+                m.get("state_raw") in REP_ACTIVE_STATES
+                or m.get("state") in ("coming", "coming_ack")
+            )
+            and not _is_operational_message(m)
         ]
 
     @property

@@ -9,12 +9,10 @@ CONF_HOST = "host"
 CONF_NAME = "name"
 CONF_USERNAME = "username"
 CONF_PASSWORD = "password"
-CONF_POLL_INTERVAL = "poll_interval"
 
 DEFAULT_POLL_INTERVAL = 30  # seconds
 DEFAULT_USERNAME = ""
 DEFAULT_PASSWORD = ""
-DEFAULT_PORT = 80
 
 # ---------------------------------------------------------------------------
 # SC2 JSON-RPC API constants (from json_requests.js)
