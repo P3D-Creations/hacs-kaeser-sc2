@@ -40,8 +40,10 @@ jobs:
           VER="${LATEST#v}"
           # Split into major.minor.patch
           IFS='.' read -r MAJOR MINOR PATCH <<< "$VER"
-          # Bump level from head commit message: [major] or [minor], else patch
-          HEAD_MSG=$(git log -1 --pretty=%B)
+          # Bump level from the commit SUBJECT line only ([major]/[minor],
+          # else patch). Body text is ignored so a commit that merely
+          # mentions the tokens cannot trigger a bump.
+          HEAD_MSG=$(git log -1 --pretty=%s)
           if echo "$HEAD_MSG" | grep -qi '\[major\]'; then
             MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0
           elif echo "$HEAD_MSG" | grep -qi '\[minor\]'; then
