@@ -38,9 +38,12 @@ Binary sensors mirror the nine panel LEDs: Error (red), Communication Error (red
 type: custom:kaeser-sc2-card
 entity_prefix: shop_air_compressor
 title: Shop Air Compressor
+power_switch_entity: switch.compressor_remote   # optional
 ```
 
 `entity_prefix` is the slugified device name (`Shop Air Compressor` -> `shop_air_compressor`); confirm against your entity IDs. The card is also available in the visual card picker ("Kaeser Sigma Control 2") with a compressor dropdown.
+
+`power_switch_entity` (optional) makes the green I and red O buttons clickable: green calls `turn_on`, red calls `turn_off` on the entity — typically a switch wired to the controller's remote-control input. A small LED with a SWITCH caption below the red button shows the entity state: green = on, dark = off, orange with OFFLINE caption = entity unavailable. Without this option the buttons are inert, like the rest of the panel graphic.
 
 Behavior:
 

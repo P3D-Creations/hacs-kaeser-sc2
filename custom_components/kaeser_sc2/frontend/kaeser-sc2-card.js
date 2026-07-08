@@ -13,7 +13,7 @@
 (function () {
   "use strict";
 
-  var CARD_VERSION = "5.1.1";
+  var CARD_VERSION = "5.2.0";
 
   /* ── Card-picker registration — MUST run before the guard ──────
    * If the browser has a cached old version that already called
@@ -74,6 +74,14 @@
 
   /* Hamburger / acknowledge button region (native px) */
   var HAMBURGER = { x: 107, y: 48, w: 51, h: 51 };
+
+  /* Green I / red O button regions (native px, measured) — clickable when
+   * power_switch_entity is configured (switch wired to remote-control input) */
+  var BTN_ON  = { x: 642, y: 324, w: 66, h: 63 };
+  var BTN_OFF = { x: 642, y: 395, w: 66, h: 63 };
+  /* switch-state indicator (LED + caption) below the red O button */
+  var PWR_LED = { cx: 649, cy: 472 };
+  var PWR_LBL = { x: 659, y: 466, w: 60, h: 13 };
 
   var LED_NAMES = [
     "led_error","led_com_error","led_maintenance","led_voltage",
@@ -311,6 +319,13 @@
         ".ack{position:absolute;left:" + _pctX(HAMBURGER.x) + ";top:" + _pctY(HAMBURGER.y) + ";width:" + _pctX(HAMBURGER.w) + ";height:" + _pctY(HAMBURGER.h) + ";cursor:pointer;border-radius:50%;background:rgba(255,255,255,0);transition:background .1s}" +
         ".ack:hover{background:rgba(255,255,255,0.12)}" +
         ".ack:active{background:rgba(0,0,0,0.18)}" +
+        /* power buttons — clickable only when power_switch_entity is set */
+        ".pwr{position:absolute;cursor:pointer;border-radius:4px;background:rgba(255,255,255,0);transition:background .1s}" +
+        ".pwr:hover{background:rgba(255,255,255,0.18)}" +
+        ".pwr:active{background:rgba(0,0,0,0.3)}" +
+        /* switch-state caption — same style as the panel's printed labels */
+        ".pwrlbl{position:absolute;display:flex;align-items:center;font:700 " + _cqw(10) + "/1 'Segoe UI',Arial,sans-serif;color:rgba(255,255,255,0.75);letter-spacing:" + _cqw(1) + ";white-space:nowrap}" +
+        ".pwrlbl.offline{color:rgba(255,255,255,0.45)}" +
         ".ft{padding:4px 14px;font:400 10px/1.4 'Segoe UI',Arial,sans-serif;color:#636e72;text-align:right}";
       shadow.appendChild(style);
 
@@ -403,6 +418,39 @@
       ack.addEventListener("click", function () { self._onHamburger(); });
       inner.appendChild(ack);
 
+      /* Power buttons — active only when a switch entity is configured */
+      if (c.power_switch_entity) {
+        function pwrBtn(id, rect, on, title) {
+          var b = document.createElement("div");
+          b.className = "pwr";
+          b.id = id;
+          b.title = title;
+          b.style.left = _pctX(rect.x); b.style.top = _pctY(rect.y);
+          b.style.width = _pctX(rect.w); b.style.height = _pctY(rect.h);
+          b.addEventListener("click", function () { self._powerAction(on); });
+          inner.appendChild(b);
+        }
+        pwrBtn("pwr-on",  BTN_ON,  true,  "Turn on " + c.power_switch_entity);
+        pwrBtn("pwr-off", BTN_OFF, false, "Turn off " + c.power_switch_entity);
+
+        /* switch-state LED + caption */
+        var pled = document.createElement("img");
+        pled.className = "led";
+        pled.id = "pwr-led";
+        pled.src = IMG_BASE + "/led_off.png";
+        pled.style.left = _pctX(PWR_LED.cx - LED_SIZE / 2);
+        pled.style.top  = _pctY(PWR_LED.cy - LED_SIZE / 2);
+        pled.title = c.power_switch_entity;
+        inner.appendChild(pled);
+        var plbl = document.createElement("div");
+        plbl.className = "pwrlbl";
+        plbl.id = "pwr-lbl";
+        plbl.style.left = _pctX(PWR_LBL.x); plbl.style.top = _pctY(PWR_LBL.y);
+        plbl.style.width = _pctX(PWR_LBL.w); plbl.style.height = _pctY(PWR_LBL.h);
+        plbl.textContent = "SWITCH";
+        inner.appendChild(plbl);
+      }
+
       panel.appendChild(inner);
       card.appendChild(panel);
 
@@ -442,6 +490,15 @@
         if (!dis[_msgId(active[i])]) return true;
       }
       return false;
+    }
+
+    _powerAction(on) {
+      var entity = this._config && this._config.power_switch_entity;
+      if (!entity || !this._hass || !this._hass.callService) return;
+      /* homeassistant.turn_on/off works for switch, input_boolean, etc. */
+      this._hass.callService("homeassistant", on ? "turn_on" : "turn_off", {
+        entity_id: entity
+      });
     }
 
     _onHamburger() {
@@ -502,6 +559,30 @@
         } else {
           img.src = IMG_BASE + "/led_off.png";
           img.classList.remove("flash");
+        }
+      }
+
+      /* ── switch-state indicator ── */
+      var pwrEntity = this._config && this._config.power_switch_entity;
+      if (pwrEntity) {
+        var pled = $("pwr-led"), plbl = $("pwr-lbl");
+        if (pled && plbl) {
+          var pst = (this._hass && this._hass.states && this._hass.states[pwrEntity])
+            ? this._hass.states[pwrEntity].state : null;
+          if (pst === "on") {
+            pled.src = IMG_BASE + "/led_green.png";
+            plbl.textContent = "SWITCH";
+            plbl.classList.remove("offline");
+          } else if (pst === "off") {
+            pled.src = IMG_BASE + "/led_off.png";
+            plbl.textContent = "SWITCH";
+            plbl.classList.remove("offline");
+          } else {
+            /* unavailable / unknown / entity missing */
+            pled.src = IMG_BASE + "/led_orange.png";
+            plbl.textContent = "OFFLINE";
+            plbl.classList.add("offline");
+          }
         }
       }
 
@@ -754,6 +835,62 @@
       devHelp.style.cssText = "font-size:11px;color:var(--secondary-text-color,#888);margin-top:3px";
       devWrap.appendChild(devHelp);
       root.appendChild(devWrap);
+
+      /* ── Power Switch (optional) ─────────────────────────── */
+      var pwrWrap = document.createElement("div");
+      pwrWrap.style.cssText = "margin-bottom:12px";
+      var pwrLabel = document.createElement("label");
+      pwrLabel.textContent = "Power Switch (optional)";
+      pwrLabel.style.cssText = "display:block;font-size:12px;font-weight:600;margin-bottom:4px;color:var(--primary-text-color,#333)";
+      pwrWrap.appendChild(pwrLabel);
+
+      var pwrSelect = document.createElement("select");
+      pwrSelect.style.cssText = select.style.cssText;
+      var pwrCurrent = this._config.power_switch_entity || "";
+      var pwrFound = false;
+
+      var pwrNone = document.createElement("option");
+      pwrNone.value = "";
+      pwrNone.textContent = "-- None (buttons disabled) --";
+      pwrSelect.appendChild(pwrNone);
+
+      if (this._hass && this._hass.states) {
+        var pwrIds = [];
+        for (var pid in this._hass.states) {
+          if (pid.indexOf("switch.") === 0 || pid.indexOf("input_boolean.") === 0) pwrIds.push(pid);
+        }
+        pwrIds.sort();
+        for (var pi = 0; pi < pwrIds.length; pi++) {
+          var pOpt = document.createElement("option");
+          pOpt.value = pwrIds[pi];
+          var pEnt = this._hass.states[pwrIds[pi]];
+          var pName = (pEnt.attributes && pEnt.attributes.friendly_name) || pwrIds[pi];
+          pOpt.textContent = pName + "  (" + pwrIds[pi] + ")";
+          if (pwrCurrent === pwrIds[pi]) { pOpt.selected = true; pwrFound = true; }
+          pwrSelect.appendChild(pOpt);
+        }
+      }
+      /* keep an unknown configured entity visible instead of silently dropping it */
+      if (pwrCurrent && !pwrFound) {
+        var pKeep = document.createElement("option");
+        pKeep.value = pwrCurrent;
+        pKeep.textContent = pwrCurrent + "  (not found)";
+        pKeep.selected = true;
+        pwrSelect.appendChild(pKeep);
+      }
+
+      pwrSelect.addEventListener("change", function() {
+        if (this.value) self._config.power_switch_entity = this.value;
+        else delete self._config.power_switch_entity;
+        self._fire();
+      });
+      pwrWrap.appendChild(pwrSelect);
+
+      var pwrHelp = document.createElement("div");
+      pwrHelp.textContent = "Entity toggled by the green I / red O buttons, e.g. a switch wired to the remote-control input. Green turns on, red turns off.";
+      pwrHelp.style.cssText = "font-size:11px;color:var(--secondary-text-color,#888);margin-top:3px";
+      pwrWrap.appendChild(pwrHelp);
+      root.appendChild(pwrWrap);
 
       /* ── Advanced layout (collapsible) ───────────────────── */
       var details = document.createElement("details");
