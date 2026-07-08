@@ -32,7 +32,8 @@
             "maintenance_in": { "name": "Maintenance In" },
             "key_switch": { "name": "Key Switch" },
             "pa_status": { "name": "PA Status" },
-            "controller_time": { "name": "Controller Time" }
+            "controller_time": { "name": "Controller Time" },
+            "active_message": { "name": "Active Message" }
         },
         "binary_sensor": {
             "led_error": { "name": "Error" },

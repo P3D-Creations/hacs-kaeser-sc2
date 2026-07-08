@@ -78,7 +78,10 @@ async def async_get_config_entry_diagnostics(
             "led_remote": data.led_remote,
             "led_clock": data.led_clock,
             "led_power_on": data.led_power_on,
-            "active_messages_count": len(data.active_messages),
+            "messages": data.recent_messages,
+            "messages_count": len(data.active_messages),
+            "active_messages": data.active_message_entries,
+            "active_messages_count": len(data.active_message_entries),
             "last_update": coordinator.last_update_success_time.isoformat()
             if coordinator.last_update_success_time
             else None,

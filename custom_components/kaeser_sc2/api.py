@@ -28,6 +28,9 @@ from .const import (
     LED_STATE_FLASH,
     LED_STATE_OFF,
     LED_STATE_ON,
+    REP_ACTIVE_STATES,
+    REP_LIST_STATUS,
+    REP_STATE_LABELS,
     RESP_APP_LOGOUT,
     RESP_SUCCESS,
     SER_ID_GET_IO_DATA,
@@ -96,11 +99,44 @@ class CompressorData:
     # I/O data
     io_data: dict = field(default_factory=dict)
 
-    # Active alarms / messages
+    # Active alarms / messages — full recent list from the status report list
+    # (report_list=0), newest first, as parsed by SigmaControl2._parse_reports.
     active_messages: list = field(default_factory=list)
 
     # Connectivity
     online: bool = False
+
+    # ------------------------------------------------------------------
+    # Derived message views (consumed by the active_message sensor)
+    # ------------------------------------------------------------------
+    @property
+    def recent_messages(self) -> list:
+        """All recent report messages (newest first), capped at 10."""
+        return self.active_messages[:10]
+
+    @property
+    def active_message_entries(self) -> list:
+        """Subset of recent messages whose condition is currently active.
+
+        A message is "active" when its ReportStateEvent is a *coming* state
+        (occurred, whether or not acknowledged) — i.e. the underlying fault /
+        warning condition is still present.  A *going* state means the
+        condition has cleared.
+        """
+        return [
+            m
+            for m in self.recent_messages
+            if m.get("state_raw") in REP_ACTIVE_STATES
+            or m.get("state") in ("coming", "coming_ack")
+        ]
+
+    @property
+    def latest_active_message(self) -> str | None:
+        """Message text of the most recent currently-active message, if any."""
+        entries = self.active_message_entries
+        if entries:
+            return entries[0].get("message") or None
+        return None
 
 
 class SigmaControl2:
@@ -669,7 +705,9 @@ class SigmaControl2:
 
         # Reports
         try:
-            rpt = await self.get_reports(report_list=0, start=0, count=10)
+            rpt = await self.get_reports(
+                report_list=REP_LIST_STATUS, start=0, count=10
+            )
             if rpt:
                 self._parse_reports(data, rpt)
                 any_success = True
@@ -864,6 +902,25 @@ class SigmaControl2:
     # Report parser
     # ------------------------------------------------------------------
     def _parse_reports(self, data: CompressorData, reports: Any) -> None:
+        """Parse a GetReportObjects response into normalized message dicts.
+
+        The controller frontend (system_data.js) consumes each report object
+        via these field names, which are authoritative:
+
+            ReportDateTime      combined "date time" string
+            ReportStateEvent    numeric event state (0=going 1=coming
+                                2=coming+ack 3=going+ack)
+            ReportStateEventTxt localized state text ("Coming"/"Going"/…)
+            Text                the message text
+            ReportTypeTxt       localized message category text
+            ReportId            display id / fault code
+            Id                  internal object id (used for acknowledge)
+
+        We normalize State to a lowercase label ("coming"/"going"/…) while
+        keeping the raw numeric value and the localized text.  Legacy field
+        names (Date/Time/State/Message/Type) are accepted as a fallback so the
+        parser degrades gracefully on unexpected firmware.
+        """
         msgs: list[dict] = []
         report_list = self._iter_numeric_dict(reports) if isinstance(reports, (dict, list)) else []
         if not report_list and isinstance(reports, dict):
@@ -872,13 +929,50 @@ class SigmaControl2:
                 report_list = self._iter_numeric_dict(rd) if isinstance(rd, dict) else rd
 
         for entry in report_list:
-            if isinstance(entry, dict):
-                msgs.append({
-                    "date": entry.get("Date", ""),
-                    "time": entry.get("Time", ""),
-                    "state": entry.get("State", ""),
-                    "message": entry.get("Message", ""),
-                    "type": entry.get("Type", ""),
-                    "id": entry.get("Id", ""),
-                })
+            if not isinstance(entry, dict):
+                continue
+
+            # Date / time: prefer combined ReportDateTime, else legacy fields.
+            dt = str(entry.get("ReportDateTime", "") or "").strip()
+            date_part = str(entry.get("Date", "") or "").strip()
+            time_part = str(entry.get("Time", "") or "").strip()
+            if dt:
+                parts = dt.split(None, 1)
+                date_part = parts[0]
+                time_part = parts[1] if len(parts) > 1 else ""
+
+            # State: normalize numeric ReportStateEvent to a lowercase label.
+            state_raw = self._safe_int(entry.get("ReportStateEvent"))
+            state_label = REP_STATE_LABELS.get(state_raw)
+            if state_label is None:
+                legacy_state = entry.get("State")
+                state_label = (
+                    str(legacy_state).strip().lower()
+                    if legacy_state not in (None, "")
+                    else ""
+                )
+            state_text = str(entry.get("ReportStateEventTxt", "") or "").strip()
+
+            message = str(entry.get("Text", entry.get("Message", "")) or "").strip()
+
+            # Type: numeric ReportType if present, else the localized text.
+            type_raw = self._safe_int(entry.get("ReportType"))
+            type_text = str(
+                entry.get("ReportTypeTxt", entry.get("Type", "")) or ""
+            ).strip()
+
+            msgs.append({
+                "date": date_part,
+                "time": time_part,
+                "datetime": dt or f"{date_part} {time_part}".strip(),
+                "state": state_label,
+                "state_raw": state_raw,
+                "state_text": state_text,
+                "message": message,
+                "type": type_raw if type_raw is not None else type_text,
+                "type_text": type_text,
+                "id": entry.get("Id", ""),
+                "report_id": entry.get("ReportId", ""),
+            })
+
         data.active_messages = msgs

@@ -63,6 +63,7 @@ Each compressor creates the following entities:
 | **Key Switch** | Key switch position |
 | **PA Status** | Pressure actuator / remote status |
 | **Controller Time** | Time displayed on the controller |
+| **Active Message** | Text of the most recent active fault/warning message ("none" when clear). Attributes hold the recent message history (`messages`), the currently-active subset (`active_messages`), and `active_count` |
 
 ### Binary Sensors (LED Indicators)
 
@@ -86,7 +87,10 @@ The integration includes a custom card that mimics the physical SC2 controller d
 - Operational state badge
 - Key switch and PA status
 - Run hours and maintenance countdown
-- LED indicator column matching the physical controller
+- LED indicator column matching the physical controller, including blinking-fault animation
+- Fault/warning popup on the LCD when the controller reports an active message — press the ≡ (acknowledge) button on the card to dismiss it (card-side only; the real compressor keeps its message and the LED stays lit until it clears)
+- Press ≡ again to view the recent-message history with timestamps; press once more to return to the live display
+- Text and layout scale with the card width (CSS container queries), so the panel stays proportional at any dashboard column size
 
 ### Card Configuration
 

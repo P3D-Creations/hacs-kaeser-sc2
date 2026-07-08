@@ -1,17 +1,19 @@
 /**
- * Kaeser Sigma Control 2 — Custom Lovelace Card  v5.0.0
+ * Kaeser Sigma Control 2 — Custom Lovelace Card  v5.1.0
  *
  * Pixel-accurate replica of the SC2 controller front panel.
  *  - Device picker dropdown in editor (auto-discovers Kaeser entities)
  *  - Editor uses change events to prevent focus loss on keypress
- *  - LED positions hardcoded from real hardware calibration
- *  - Pressure displayed as integer (no decimals, max 3 digits)
+ *  - LED positions calibrated from real hardware (native 750x513 px)
+ *  - Text scales with card width via CSS container queries (cqw units)
+ *  - Active-message popup + hamburger button (dismiss / recent-list view)
+ *  - Renders full skeleton on setConfig without waiting for hass
  *  - Wrapped in IIFE to prevent global scope collisions
  */
 (function () {
   "use strict";
 
-  var CARD_VERSION = "5.0.0";
+  var CARD_VERSION = "5.1.0";
 
   /* ── Card-picker registration — MUST run before the guard ──────
    * If the browser has a cached old version that already called
@@ -42,31 +44,36 @@
   var IMG_BASE = "/kaeser_sc2/images";
 
   /* ═══════════════════════════════════════════════════════════════
-   * Layout constants (px at 750×493 native)
+   * Layout constants — px at 750x513 native (measured, pixel-tight)
+   *   display screen (LCD glass): x197 y90 w348 h179
+   *   status bar occupies top 20px of the glass; content the rest.
    * ═══════════════════════════════════════════════════════════════ */
   var DEFAULTS = {
-    sb_left: 198,  sb_top: 88,  sb_width: 345, sb_height: 20,
+    sb_left: 197,  sb_top: 90,   sb_width: 348, sb_height: 20,
     sb_font: 16,
-    lcd_left: 198, lcd_top: 110, lcd_width: 345, lcd_height: 155,
+    lcd_left: 197, lcd_top: 110, lcd_width: 348, lcd_height: 159,
     lcd_font: 16
   };
 
-  /* LED positions — calibrated to real hardware, not configurable */
+  var SC2_W = 750;
+  var SC2_H = 513;
+
+  /* LED render size (native px) and measured centres */
   var LED_SIZE = 13;
   var LED_POS = {
-    led_error:       { x: 43,  y: 44  },
-    led_com_error:   { x: 43,  y: 107 },
-    led_maintenance: { x: 43,  y: 165 },
-    led_voltage:     { x: 43,  y: 250 },
-    led_load:        { x: 43,  y: 378 },
-    led_idle:        { x: 43,  y: 412 },
-    led_remote:      { x: 225, y: 376 },
-    led_clock:       { x: 300, y: 376 },
-    led_power_on:    { x: 643, y: 311 }
+    led_error:       { cx: 49,  cy: 53  },
+    led_com_error:   { cx: 49,  cy: 116 },
+    led_maintenance: { cx: 49,  cy: 179 },
+    led_voltage:     { cx: 49,  cy: 266 },
+    led_load:        { cx: 49,  cy: 398 },
+    led_idle:        { cx: 49,  cy: 434 },
+    led_remote:      { cx: 231, cy: 398 },
+    led_clock:       { cx: 306, cy: 398 },
+    led_power_on:    { cx: 649, cy: 331 }
   };
 
-  var SC2_W = 750;
-  var SC2_H = 493;
+  /* Hamburger / acknowledge button region (native px) */
+  var HAMBURGER = { x: 107, y: 48, w: 51, h: 51 };
 
   var LED_NAMES = [
     "led_error","led_com_error","led_maintenance","led_voltage",
@@ -76,6 +83,18 @@
     led_error:"red", led_com_error:"red", led_maintenance:"orange",
     led_voltage:"green", led_load:"green", led_idle:"green",
     led_remote:"green", led_clock:"green", led_power_on:"green"
+  };
+  /* Preferred entity-suffix per LED (translated names); fall back to led_* */
+  var LED_ENTITY_SUFFIX = {
+    led_error:        "error",
+    led_com_error:    "communication_error",
+    led_maintenance:  "maintenance_due",
+    led_voltage:      "voltage_ok",
+    led_load:         "load",
+    led_idle:         "idle",
+    led_remote:       "remote",
+    led_clock:        "clock",
+    led_power_on:     "power_on"
   };
 
   /* helpers */
@@ -87,16 +106,46 @@
   }
   function _pctX(px) { return (px / SC2_W * 100).toFixed(3) + "%"; }
   function _pctY(px) { return (px / SC2_H * 100).toFixed(3) + "%"; }
+  function _cqw(px)  { return (px / SC2_W * 100).toFixed(3) + "cqw"; }
   function _clean(val) {
-    return (!val || val === "\u2014" || val === "unknown" || val === "unavailable") ? "" : val;
+    return (!val || val === "—" || val === "unknown" || val === "unavailable") ? "" : val;
   }
   function _hVal(val) {
-    return (!val || val === "\u2014" || val === "unknown" || val === "unavailable") ? "" : val + "h";
+    return (!val || val === "—" || val === "unknown" || val === "unavailable") ? "" : val + "h";
   }
   function _intPressure(val) {
     if (!_clean(val)) return "";
     var n = parseFloat(val);
     return isNaN(n) ? val : String(Math.round(n));
+  }
+
+  var TYPE_LABELS = { "0":"Info", "1":"Warning", "2":"Fault", "3":"System", "4":"Diagnose",
+                      "I":"Info", "W":"Warning", "F":"Fault", "S":"System", "D":"Diagnose" };
+  function _typeLabel(msg) {
+    if (!msg) return "";
+    if (msg.type_text) return String(msg.type_text);
+    var t = msg.type;
+    if (t === undefined || t === null || t === "") return "";
+    var key = String(t);
+    return TYPE_LABELS[key] || key;
+  }
+  function _msgId(msg) {
+    if (!msg) return "";
+    /* Compound key: id alone could be reused by the controller when the same
+     * fault recurs later — including the event time makes a recurrence pop
+     * the message up again instead of staying silently dismissed. */
+    var base = "";
+    if (msg.id !== undefined && msg.id !== null && msg.id !== "") base = String(msg.id);
+    else if (msg.report_id !== undefined && msg.report_id !== null && msg.report_id !== "") base = String(msg.report_id);
+    var when = msg.datetime || ((msg.date || "") + " " + (msg.time || "")).trim();
+    if (base) return base + "|" + when;
+    return String(when + "|" + (msg.message || ""));
+  }
+  function _msgCode(msg) {
+    if (!msg) return "";
+    if (msg.report_id !== undefined && msg.report_id !== null && msg.report_id !== "") return String(msg.report_id);
+    if (msg.id !== undefined && msg.id !== null && msg.id !== "") return String(msg.id);
+    return "";
   }
 
   /* ╔═══════════════════════════════════════════════════════════════╗
@@ -109,6 +158,8 @@
       this._config = null;
       this._hass = null;
       this._rendered = false;
+      this._view = "normal";        /* "normal" | "history" */
+      this._dismissed = null;        /* Set of dismissed active-message ids */
       this.attachShadow({ mode: "open" });
     }
 
@@ -129,8 +180,9 @@
       if (!config) throw new Error("Invalid configuration");
       this._config = config;
       this._rendered = false;
-      /* If hass is already available (e.g. dashboard refresh), render now */
-      if (this._hass) this._tryRender();
+      this._dismissed = null;
+      /* Paint the full panel skeleton IMMEDIATELY, before hass arrives */
+      this._tryRender();
     }
 
     _tryRender() {
@@ -139,7 +191,6 @@
         this._refresh();
       } catch (e) {
         console.error("[kaeser-sc2-card] render error:", e);
-        /* Show visible error instead of empty/spinning card */
         this.shadowRoot.innerHTML =
           "<ha-card><div style='padding:16px;color:red;font-family:monospace'>" +
           "<b>kaeser-sc2-card error:</b><br>" + this._esc(String(e)) +
@@ -148,6 +199,34 @@
     }
 
     getCardSize() { return 9; }
+    getGridOptions() { return { columns: 12, rows: "auto" }; }
+
+    /* ── dismissal persistence (per entity_prefix, survives refresh) ── */
+    _dismissKey() {
+      return "kaeser-sc2-dismissed:" + (this._config && this._config.entity_prefix || "");
+    }
+    _loadDismissed() {
+      if (this._dismissed) return this._dismissed;
+      var set = {};
+      try {
+        var raw = window.localStorage.getItem(this._dismissKey());
+        if (raw) {
+          var arr = JSON.parse(raw);
+          if (arr && arr.length) for (var i = 0; i < arr.length; i++) set[String(arr[i])] = true;
+        }
+      } catch (e) { /* localStorage unavailable — degrade gracefully */ }
+      this._dismissed = set;
+      return set;
+    }
+    _saveDismissed() {
+      try {
+        var arr = [];
+        for (var k in this._dismissed) if (this._dismissed.hasOwnProperty(k)) arr.push(k);
+        /* cap stored ids so localStorage never grows unboundedly */
+        if (arr.length > 50) arr = arr.slice(arr.length - 50);
+        window.localStorage.setItem(this._dismissKey(), JSON.stringify(arr));
+      } catch (e) { /* ignore */ }
+    }
 
     /* ── entity helpers ── */
     _entity(domain, suffix) {
@@ -156,13 +235,16 @@
       var id = domain + "." + prefix + "_" + suffix;
       return (this._hass && this._hass.states) ? this._hass.states[id] || null : null;
     }
+    _ledEntity(name) {
+      /* prefer translated-name suffix, fall back to led_* (older installs) */
+      var mapped = LED_ENTITY_SUFFIX[name];
+      var e = mapped ? this._entity("binary_sensor", mapped) : null;
+      if (e) return e;
+      return this._entity("binary_sensor", name);
+    }
     _state(suffix) {
       var e = this._entity("sensor", suffix);
-      return e ? e.state : "\u2014";
-    }
-    _binaryState(suffix) {
-      var e = this._entity("binary_sensor", suffix);
-      return e ? e.state : "off";
+      return e ? e.state : "—";
     }
     _unit(suffix) {
       var e = this._entity("sensor", suffix);
@@ -180,6 +262,7 @@
     _buildCard() {
       var c = this._config;
       var shadow = this.shadowRoot;
+      var self = this;
 
       var sb_l = _v(c,"sb_left"),  sb_t = _v(c,"sb_top"),  sb_w = _v(c,"sb_width"),  sb_h = _v(c,"sb_height"), sb_f = _v(c,"sb_font");
       var lcd_l= _v(c,"lcd_left"), lcd_t= _v(c,"lcd_top"), lcd_w= _v(c,"lcd_width"), lcd_h= _v(c,"lcd_height"),lcd_f= _v(c,"lcd_font");
@@ -190,17 +273,35 @@
         "ha-card{overflow:hidden;border-radius:12px;background:#2c2c2c}" +
         ".hdr{display:flex;align-items:center;justify-content:space-between;background:#FFCC00;color:#1a1a1a;padding:6px 14px;font:700 14px/1.2 'Segoe UI',Arial,sans-serif}" +
         ".hdr .b{font-size:11px;font-weight:400;opacity:.7}" +
-        ".panel{position:relative;width:100%;padding-bottom:" + (SC2_H/SC2_W*100).toFixed(4) + "%;background:url('" + IMG_BASE + "/sc2.jpg') center/100% 100% no-repeat;overflow:hidden}" +
+        /* container-type establishes the cqw reference = panel inline width */
+        ".panel{position:relative;width:100%;padding-bottom:" + (SC2_H/SC2_W*100).toFixed(4) + "%;background:url('" + IMG_BASE + "/sc2.jpg') center/100% 100% no-repeat;overflow:hidden;container-type:inline-size}" +
         ".inner{position:absolute;inset:0}" +
         ".sb{position:absolute;left:" + _pctX(sb_l) + ";top:" + _pctY(sb_t) + ";width:" + _pctX(sb_w) + ";height:" + _pctY(sb_h) + ";background:#000;overflow:hidden}" +
-        ".sb span{position:absolute;top:0;height:100%;display:flex;align-items:center;font:normal " + sb_f + "px/1 'Courier New','Arial Unicode MS',monospace;color:#fff;white-space:nowrap}" +
-        ".lcd{position:absolute;left:" + _pctX(lcd_l) + ";top:" + _pctY(lcd_t) + ";width:" + _pctX(lcd_w) + ";height:" + _pctY(lcd_h) + ";overflow:hidden}" +
+        ".sb span{position:absolute;top:0;height:100%;display:flex;align-items:center;font:normal " + _cqw(sb_f) + "/1 'Courier New','Arial Unicode MS',monospace;color:#fff;white-space:nowrap}" +
+        ".lcd{position:absolute;left:" + _pctX(lcd_l) + ";top:" + _pctY(lcd_t) + ";width:" + _pctX(lcd_w) + ";height:" + _pctY(lcd_h) + ";box-sizing:border-box;padding:" + _cqw(6) + ";overflow:hidden}" +
+        ".lines{position:relative;width:100%;height:100%}" +
         ".ln{position:relative;box-sizing:border-box}" +
-        ".ln span{position:absolute;top:0;height:100%;display:flex;align-items:center;font:normal " + lcd_f + "px/1 'Courier New','Arial Unicode MS',monospace;color:#454545;white-space:nowrap;overflow:hidden}" +
-        ".sb span,.ln span{font-size:clamp(6px,2.13vw," + Math.max(sb_f,lcd_f) + "px)}" +
+        ".ln span{position:absolute;top:0;height:100%;display:flex;align-items:center;font:normal " + _cqw(lcd_f) + "/1 'Courier New','Arial Unicode MS',monospace;color:#454545;white-space:nowrap;overflow:hidden}" +
+        /* popup — inverse-video alert box over the content region */
+        ".popup{position:absolute;inset:0;background:#000;color:#fff;box-sizing:border-box;padding:" + _cqw(4) + ";display:none;flex-direction:column;justify-content:center;font:normal " + _cqw(lcd_f) + "/1.25 'Courier New','Arial Unicode MS',monospace;overflow:hidden}" +
+        ".popup .prow{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}" +
+        ".popup .pttl{font-weight:700}" +
+        ".popup .pmsg{margin:" + _cqw(2) + " 0}" +
+        ".popup .pdim{opacity:.85}" +
+        ".popup .phint{margin-top:" + _cqw(3) + ";opacity:.7;font-size:" + _cqw(lcd_f * 0.8) + "}" +
+        ".popup .pmore+.pmore{border-top:1px solid #555;margin-top:" + _cqw(3) + ";padding-top:" + _cqw(3) + "}" +
+        /* history — recent messages list over the content region */
+        ".hist{position:absolute;inset:0;box-sizing:border-box;padding:" + _cqw(2) + ";display:none;flex-direction:column;color:#333;font:normal " + _cqw(lcd_f * 0.82) + "/1.25 'Courier New','Arial Unicode MS',monospace;overflow:hidden}" +
+        ".hist .htitle{font-weight:700;color:#222;border-bottom:1px solid #7a7a7a;padding-bottom:" + _cqw(1) + ";margin-bottom:" + _cqw(1) + "}" +
+        ".hist .hrow{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}" +
+        ".hist .hempty{opacity:.7}" +
         ".led{position:absolute;width:" + _pctX(LED_SIZE) + ";height:" + _pctY(LED_SIZE) + "}" +
         ".led.flash{animation:blink .6s infinite}" +
         "@keyframes blink{0%,100%{opacity:1}50%{opacity:.12}}" +
+        /* hamburger / acknowledge clickable region */
+        ".ack{position:absolute;left:" + _pctX(HAMBURGER.x) + ";top:" + _pctY(HAMBURGER.y) + ";width:" + _pctX(HAMBURGER.w) + ";height:" + _pctY(HAMBURGER.h) + ";cursor:pointer;border-radius:50%;background:rgba(255,255,255,0);transition:background .1s}" +
+        ".ack:hover{background:rgba(255,255,255,0.12)}" +
+        ".ack:active{background:rgba(0,0,0,0.18)}" +
         ".ft{padding:4px 14px;font:400 10px/1.4 'Segoe UI',Arial,sans-serif;color:#636e72;text-align:right}";
       shadow.appendChild(style);
 
@@ -228,40 +329,50 @@
         sp(245, 100, "sb-d", "flex-end");
       inner.appendChild(sb);
 
-      /* LCD content — 8 lines */
+      /* LCD content region */
       var lcd = document.createElement("div"); lcd.className = "lcd";
+
+      /* normal line stack */
+      var lines = document.createElement("div"); lines.className = "lines";
       var lW = lcd_w;
       function lp(left,width,id,align,text) {
         var s = "left:" + (left/lW*100).toFixed(2) + "%;width:" + (width/lW*100).toFixed(2) + "%";
         if (align) s += ";justify-content:" + align;
-        var inner = text || "";
-        return "<span " + (id ? "id='"+id+"'" : "") + " style='" + s + "'>" + inner + "</span>";
+        var innerTxt = text || "";
+        return "<span " + (id ? "id='"+id+"'" : "") + " style='" + s + "'>" + innerTxt + "</span>";
       }
       var sep = "<span style='left:0;width:100%'>------------------------------</span>";
-
-      var lines = [
+      var lineDefs = [
         sep,
         lp(5, lW - 5, "lcd-st", "flex-start"),
         sep,
         lp(5,60,null,null,"Key") + lp(65,15,null,null,"-") + lp(80,55,"lcd-key","flex-start") +
-          lp(140,10,null,null,"\u00a6") +
+          lp(140,10,null,null,"¦") +
           lp(155,25,null,"flex-start","pA") + lp(180,15,null,null,"-") + lp(200,140,"lcd-pa","flex-start"),
         sep,
         lp(160,60,null,null,"Run") + lp(230,115,"lcd-run","flex-end"),
         lp(160,60,null,null,"Load") + lp(230,115,"lcd-load","flex-end"),
         lp(5,220,null,null,"Maintenance in") + lp(230,115,"lcd-mt","flex-end")
       ];
-      var lineH = (100 / lines.length).toFixed(3) + "%";
-      for (var i = 0; i < lines.length; i++) {
+      var lineH = (100 / lineDefs.length).toFixed(3) + "%";
+      for (var i = 0; i < lineDefs.length; i++) {
         var d = document.createElement("div"); d.className = "ln";
         d.style.height = lineH;
-        d.innerHTML = lines[i];
+        d.innerHTML = lineDefs[i];
         if (i === 6) d.id = "ln-load";
-        lcd.appendChild(d);
+        lines.appendChild(d);
       }
+      lcd.appendChild(lines);
+
+      /* popup + history overlays */
+      var popup = document.createElement("div"); popup.className = "popup"; popup.id = "lcd-popup";
+      lcd.appendChild(popup);
+      var hist = document.createElement("div"); hist.className = "hist"; hist.id = "lcd-hist";
+      lcd.appendChild(hist);
+
       inner.appendChild(lcd);
 
-      /* LEDs — hardcoded positions */
+      /* LEDs — positioned by measured centres */
       for (var li = 0; li < LED_NAMES.length; li++) {
         var name = LED_NAMES[li];
         var pos = LED_POS[name];
@@ -270,10 +381,18 @@
         img.className = "led";
         img.id = "led-" + name;
         img.src = IMG_BASE + "/led_off.png";
-        img.style.left = _pctX(pos.x);
-        img.style.top  = _pctY(pos.y);
+        img.style.left = _pctX(pos.cx - LED_SIZE / 2);
+        img.style.top  = _pctY(pos.cy - LED_SIZE / 2);
         inner.appendChild(img);
       }
+
+      /* Hamburger / acknowledge button */
+      var ack = document.createElement("div");
+      ack.className = "ack";
+      ack.id = "ack-btn";
+      ack.title = "Acknowledge / messages";
+      ack.addEventListener("click", function () { self._onHamburger(); });
+      inner.appendChild(ack);
 
       panel.appendChild(inner);
       card.appendChild(panel);
@@ -288,6 +407,46 @@
 
     _esc(s) { var d = document.createElement("div"); d.textContent = s; return d.innerHTML; }
 
+    /* ── active-message helpers ── */
+    _activeMsgEntity() { return this._entity("sensor", "active_message"); }
+    _activeMessages() {
+      var e = this._activeMsgEntity();
+      if (!e || !e.attributes) return [];
+      var am = e.attributes.active_messages;
+      if (am && am.length) return am;
+      /* fall back to active_count/messages if active_messages absent */
+      return [];
+    }
+    _allMessages() {
+      var e = this._activeMsgEntity();
+      if (!e || !e.attributes) return [];
+      return e.attributes.messages || [];
+    }
+    /* popup should show when there are active messages not all dismissed */
+    _popupPending() {
+      var active = this._activeMessages();
+      if (!active.length) return false;
+      var dis = this._loadDismissed();
+      for (var i = 0; i < active.length; i++) {
+        if (!dis[_msgId(active[i])]) return true;
+      }
+      return false;
+    }
+
+    _onHamburger() {
+      /* popup visible → dismiss it; otherwise toggle history view */
+      var popupVisible = (this._view === "normal") && this._popupPending();
+      if (popupVisible) {
+        var active = this._activeMessages();
+        var dis = this._loadDismissed();
+        for (var i = 0; i < active.length; i++) dis[_msgId(active[i])] = true;
+        this._saveDismissed();
+      } else {
+        this._view = (this._view === "history") ? "normal" : "history";
+      }
+      this._refresh();
+    }
+
     /* ── refresh ── */
     _refresh() {
       if (!this.shadowRoot) return;
@@ -298,7 +457,7 @@
       var p  = this._state("pressure"), pU = this._unit("pressure") || "psi";
       var pFmt = _intPressure(p);
 
-      var t  = this._state("temperature"), tU = this._unit("temperature") || "\u00b0F";
+      var t  = this._state("temperature"), tU = this._unit("temperature") || "°F";
       var tm = this._state("controller_time");
 
       var sbP = $("sb-p"), sbT = $("sb-t"), sbD = $("sb-d");
@@ -316,15 +475,17 @@
       if (lnLoad) lnLoad.style.display = _clean(loadRaw) ? "" : "none";
       var lcdMt = $("lcd-mt"); if (lcdMt) lcdMt.textContent = _hVal(this._state("maintenance_in"));
 
+      /* ── LEDs ── */
       for (var li = 0; li < LED_NAMES.length; li++) {
         var name = LED_NAMES[li];
         var img = $("led-" + name);
         if (!img) continue;
-        var raw = this._binaryState(name);
-        var ent = this._entity("binary_sensor", name);
-        var ledRaw = (ent && ent.attributes) ? (ent.attributes.led_raw_state || "") : "";
+        var ent = this._ledEntity(name);
+        var raw = ent ? ent.state : "off";
+        var offline = (raw === "unavailable" || raw === "unknown");
+        var ledRaw = (ent && ent.attributes && !offline) ? (ent.attributes.led_raw_state || "") : "";
         var ledColor = (ent && ent.attributes) ? (ent.attributes.led_color || LED_COLOURS[name] || "green") : (LED_COLOURS[name] || "green");
-        if (raw === "on" || ledRaw === "on" || ledRaw === "flash") {
+        if (!offline && (raw === "on" || ledRaw === "on" || ledRaw === "flash")) {
           img.src = IMG_BASE + "/led_" + ledColor + ".png";
           img.classList.toggle("flash", ledRaw === "flash");
         } else {
@@ -332,6 +493,88 @@
           img.classList.remove("flash");
         }
       }
+
+      /* ── popup / history overlays ── */
+      this._refreshOverlays();
+    }
+
+    _refreshOverlays() {
+      var self = this;
+      function $(id) { return self.shadowRoot.getElementById(id); }
+      var popup = $("lcd-popup");
+      var hist  = $("lcd-hist");
+      var lines = this.shadowRoot.querySelector(".lines");
+      if (!popup || !hist) return;
+
+      var showPopup = (this._view === "normal") && this._popupPending();
+      var showHist  = (this._view === "history");
+
+      /* history view ─────────────────────────────────────────── */
+      if (showHist) {
+        hist.innerHTML = this._buildHistoryHtml();
+        hist.style.display = "flex";
+      } else {
+        hist.style.display = "none";
+      }
+
+      /* popup view ────────────────────────────────────────────── */
+      if (showPopup) {
+        popup.innerHTML = this._buildPopupHtml();
+        popup.style.display = "flex";
+      } else {
+        popup.style.display = "none";
+      }
+
+      /* normal lines hidden whenever an overlay covers them */
+      if (lines) lines.style.visibility = (showPopup || showHist) ? "hidden" : "visible";
+    }
+
+    _buildPopupHtml() {
+      var active = this._activeMessages();
+      var dis = this._loadDismissed();
+      /* only show the not-yet-dismissed active messages, newest first */
+      var show = [];
+      for (var i = 0; i < active.length && show.length < 2; i++) {
+        if (!dis[_msgId(active[i])]) show.push(active[i]);
+      }
+      if (!show.length) show = active.slice(0, 1);
+      var html = "";
+      for (var j = 0; j < show.length; j++) {
+        var m = show[j];
+        var label = _typeLabel(m);
+        var code = _msgCode(m);
+        var ttl = this._esc((label ? label : "Message") + (code ? "  " + code : ""));
+        var body = this._esc(_clean(m.message) || m.state_text || "");
+        var when = this._esc(((m.date || "") + " " + (m.time || "")).trim() || _clean(m.datetime) || "");
+        html += "<div class='pmore'>" +
+                  "<div class='prow pttl'>" + ttl + "</div>" +
+                  "<div class='prow pmsg'>" + body + "</div>" +
+                  "<div class='prow pdim'>" + when + "</div>" +
+                "</div>";
+      }
+      html += "<div class='phint'>Press ≡ to acknowledge</div>";
+      return html;
+    }
+
+    _buildHistoryHtml() {
+      var msgs = this._allMessages();
+      var html = "<div class='htitle'>Recent messages</div>";
+      if (!msgs.length) {
+        html += "<div class='hrow hempty'>No messages</div>";
+        return html;
+      }
+      var n = Math.min(msgs.length, 6);
+      for (var i = 0; i < n; i++) {
+        var m = msgs[i];
+        var when = ((m.date || "") + " " + (m.time || "")).trim() || _clean(m.datetime) || "";
+        var st = m.state || "";
+        var arrow = (st.indexOf("coming") === 0) ? "▶" : (st.indexOf("going") === 0) ? "◁" : "•";
+        var code = _msgCode(m);
+        var msg = _clean(m.message) || m.state_text || "";
+        var row = when + "  " + arrow + "  " + (code ? code + " " : "") + msg;
+        html += "<div class='hrow'>" + this._esc(row) + "</div>";
+      }
+      return html;
     }
   }
 
@@ -464,7 +707,7 @@
 
       var optCustom = document.createElement("option");
       optCustom.value = "__custom__";
-      optCustom.textContent = "Custom prefix\u2026";
+      optCustom.textContent = "Custom prefix…";
       if (isCustom && currentPrefix) optCustom.selected = true;
       select.appendChild(optCustom);
 
@@ -536,7 +779,7 @@
 
       var hint = document.createElement("div");
       hint.style.cssText = "margin-top:10px;padding:10px;background:var(--secondary-background-color,#f5f5f5);border-radius:8px;font-size:12px;line-height:1.5;color:var(--secondary-text-color,#666)";
-      hint.textContent = "All coordinates are in pixels within the 750\u00d7493 SC2 background image. The card scales proportionally to fit the dashboard column width.";
+      hint.textContent = "All coordinates are in pixels within the 750×513 SC2 background image. Text scales with the card width via CSS container queries, so the layout stays proportional at any dashboard column width.";
       advInner.appendChild(hint);
 
       details.appendChild(advInner);

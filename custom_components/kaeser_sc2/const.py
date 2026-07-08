@@ -71,3 +71,50 @@ LED_COLOUR_OFF = 0
 LED_COLOUR_RED = 1
 LED_COLOUR_ORANGE = 2
 LED_COLOUR_GREEN = 3
+
+# ---------------------------------------------------------------------------
+# Report-manager enums (from system_data.js)
+#
+# GetReportObjects(ReportList, StartIndex, NrOfReports) returns, in field "3",
+# a numeric-keyed dict of report objects. Each report object has fields:
+#   ReportDateTime      combined "date time" string
+#   ReportStateEvent    numeric event state (see REP_EVT_* below)
+#   ReportStateEventTxt localized state text ("Coming"/"Going"/…)
+#   Text                the message text
+#   ReportTypeTxt       localized message category text
+#   ReportId            display id / fault code
+#   Id                  internal object id (used for acknowledge)
+# ---------------------------------------------------------------------------
+
+# Report list ids (the ReportList parameter to GetReportObjects)
+REP_LIST_STATUS = 0            # current/pending messages — the "Messages" screen
+REP_LIST_HISTORY_COMPRESSOR = 1
+REP_LIST_HISTORY_SYSTEM = 2
+REP_LIST_HISTORY_DIAGNOSE = 3
+REP_LIST_MAINTENANCE = 4
+
+# Report type ids (ReportType — categorises the message)
+REP_TYPE_COMPRESSOR_OPERATION = 0
+REP_TYPE_COMPRESSOR_WARNING = 1
+REP_TYPE_COMPRESSOR_ERROR = 2
+REP_TYPE_SYSTEM = 3
+REP_TYPE_DIAGNOSE = 4
+
+# Report state-event ids (ReportStateEvent):
+#   an event has "come" (occurred/active) or "gone" (cleared), and may be
+#   acknowledged ("quittiert") by an operator.
+REP_EVT_GONE = 0               # gegangen — condition cleared
+REP_EVT_COMING = 1             # gekommen — condition active
+REP_EVT_COMING_ACK = 2         # gekommen quittiert — active + acknowledged
+REP_EVT_GONE_ACK = 3           # gegangen quittiert — cleared + acknowledged
+
+# Normalised lowercase labels for ReportStateEvent
+REP_STATE_LABELS = {
+    REP_EVT_GONE: "going",
+    REP_EVT_COMING: "coming",
+    REP_EVT_COMING_ACK: "coming_ack",
+    REP_EVT_GONE_ACK: "going_ack",
+}
+
+# States that mean the condition is currently present/active.
+REP_ACTIVE_STATES = {REP_EVT_COMING, REP_EVT_COMING_ACK}

@@ -31,6 +31,7 @@ class KaeserSensorDescription(SensorEntityDescription):
 
     value_fn: Callable[[CompressorData], Any]
     unit_fn: Callable[[CompressorData], str | None] | None = None
+    attributes_fn: Callable[[CompressorData], dict[str, Any]] | None = None
 
 
 SENSOR_DESCRIPTIONS: tuple[KaeserSensorDescription, ...] = (
@@ -112,6 +113,19 @@ SENSOR_DESCRIPTIONS: tuple[KaeserSensorDescription, ...] = (
         icon="mdi:clock-outline",
         value_fn=lambda d: d.controller_time,
     ),
+    KaeserSensorDescription(
+        key="active_message",
+        translation_key="active_message",
+        icon="mdi:message-alert",
+        # State = text of the most recent currently-active message, else
+        # "none"; truncated to HA's 255-char state limit.
+        value_fn=lambda d: (d.latest_active_message or "none")[:255],
+        attributes_fn=lambda d: {
+            "messages": d.recent_messages,
+            "active_messages": d.active_message_entries,
+            "active_count": len(d.active_message_entries),
+        },
+    ),
 )
 
 
@@ -176,6 +190,13 @@ class KaeserSensor(CoordinatorEntity[KaeserSC2Coordinator], SensorEntity):
         if self.entity_description.unit_fn and self.coordinator.data:
             return self.entity_description.unit_fn(self.coordinator.data)
         return self.entity_description.native_unit_of_measurement
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        """Return extra attributes for sensors that expose structured data."""
+        if self.entity_description.attributes_fn and self.coordinator.data:
+            return self.entity_description.attributes_fn(self.coordinator.data)
+        return None
 
     @property
     def available(self) -> bool:

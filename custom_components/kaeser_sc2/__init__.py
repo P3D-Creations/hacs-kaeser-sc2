@@ -30,11 +30,14 @@ type KaeserSC2ConfigEntry = ConfigEntry
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     """Register the custom card JS and static image assets."""
-    # Read version from manifest for cache-busting query string
+    # Read version from manifest for cache-busting query string.
+    # manifest_path.read_text() is blocking I/O — run it in the executor so it
+    # does not block the event loop (HA logs a warning otherwise).
     import json
     manifest_path = Path(__file__).parent / "manifest.json"
     try:
-        manifest = json.loads(manifest_path.read_text())
+        manifest_text = await hass.async_add_executor_job(manifest_path.read_text)
+        manifest = json.loads(manifest_text)
         version = manifest.get("version", "0")
     except Exception:
         version = "0"
@@ -48,7 +51,7 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
         card_url_versioned,
     )
     await hass.http.async_register_static_paths([
-        StaticPathConfig(CARD_JS_URL_BASE, str(CARD_JS_PATH), cache_headers=False),
+        StaticPathConfig(CARD_JS_URL_BASE, str(CARD_JS_PATH), cache_headers=True),
         StaticPathConfig(IMAGES_URL, str(IMAGES_PATH), cache_headers=True),
     ])
     # Use versioned URL for cache-busting (HA frontend/service worker may
