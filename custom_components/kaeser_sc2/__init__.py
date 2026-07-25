@@ -57,7 +57,48 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     # Use versioned URL for cache-busting (HA frontend/service worker may
     # cache the JS even when cache_headers=False)
     add_extra_js_url(hass, card_url_versioned)
+    # Also register a Lovelace resource on storage-mode dashboards (same URL,
+    # deduped by the browser). Adds the dashboard resource-loader path, which
+    # tends to load more reliably in the Companion app than the global
+    # extra-module injection.
+    await _async_register_lovelace_resource(hass, card_url_versioned)
     return True
+
+
+async def _async_register_lovelace_resource(hass: HomeAssistant, url: str) -> None:
+    """Add/refresh the card as a Lovelace resource (storage mode only).
+
+    Best-effort: YAML-mode dashboards manage resources in configuration.yaml,
+    and the resource-collection API has shifted across HA versions, so any
+    failure is logged and ignored — add_extra_js_url still covers loading.
+    Keeps a single resource, updating its URL when the version changes.
+    """
+    base = url.split("?", 1)[0]
+    try:
+        lovelace = hass.data.get("lovelace")
+        mode = getattr(lovelace, "mode", None)
+        resources = getattr(lovelace, "resources", None)
+        if mode != "storage" or resources is None:
+            return
+        if not getattr(resources, "loaded", False):
+            if hasattr(resources, "async_load"):
+                await resources.async_load()
+            elif hasattr(resources, "async_get_info"):
+                await resources.async_get_info()
+
+        items = list(resources.async_items())
+        existing = next(
+            (it for it in items if str(it.get("url", "")).split("?", 1)[0] == base),
+            None,
+        )
+        if existing is None:
+            await resources.async_create_item({"res_type": "module", "url": url})
+            _LOGGER.debug("Added Lovelace resource %s", url)
+        elif existing.get("url") != url:
+            await resources.async_update_item(existing["id"], {"url": url})
+            _LOGGER.debug("Updated Lovelace resource to %s", url)
+    except Exception as err:  # noqa: BLE001 — never block setup on the resource
+        _LOGGER.debug("Could not register Lovelace resource (%s): %s", base, err)
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: KaeserSC2ConfigEntry) -> bool:
