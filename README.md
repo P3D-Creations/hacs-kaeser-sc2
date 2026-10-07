@@ -41,7 +41,7 @@ title: Shop Air Compressor
 power_switch_entity: switch.compressor_remote   # optional
 ```
 
-`entity_prefix` is the slugified device name (`Shop Air Compressor` -> `shop_air_compressor`); confirm against your entity IDs. The card is also available in the visual card picker ("Kaeser Sigma Control 2") with a compressor dropdown.
+`entity_prefix` is the slugified device name (`Shop Air Compressor` -> `shop_air_compressor`); confirm against your entity IDs. The card is also available in the visual card picker ("Kaeser Sigma Control 2"). Its editor uses Home Assistant's standard device and entity pickers; choosing a compressor sets `entity_prefix` automatically.
 
 `power_switch_entity` (optional) makes the green I and red O buttons clickable: green calls `turn_on`, red calls `turn_off` on the entity — typically a switch wired to the controller's remote-control input. A small LED with a SWITCH caption below the red button shows the entity state: green = on, dark = off, orange with OFFLINE caption = entity unavailable. Without this option the buttons are inert, like the rest of the panel graphic.
 
@@ -67,6 +67,7 @@ The integration authenticates with the controller's SHA256 challenge-response lo
 | Entities unavailable | Enable debug logging (below); look for auth/session errors |
 | Missing values | HMI layout varies by firmware; open an issue with debug logs |
 | Card not appearing | Resource registered (see above); clear browser cache |
+| Card shows "Configuration error" intermittently | Fixed in card 5.3.0 (definition raced HA's scoped element registry); update and hard-refresh |
 
 ```yaml
 logger:
